@@ -1,4 +1,4 @@
-"""Six independent contracts; build_project has no handler."""
+"""Six independent contracts; production build owner integration is not wired."""
 
 from copy import deepcopy
 
@@ -98,6 +98,13 @@ _RESULTS = {
         "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}},
         ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
     "build_project": obj({"build_id": identifier, "state": enum("pending", "running", "done", "error", "interrupted"),
+        "project_id": identifier, "version": version, "board_id": identifier,
+        "test_only": {"const": True}, "log_truncated": {"type": "boolean"},
+        "provenance_sha256": version, "toolchain_version": string(200),
+        "firmware_type": {"type": ["string", "null"], "enum": [None, "bin", "hex", "uf2", "elf"]},
+        "reproducibility_limited": {"const": True}, "shared_cache_allowed": {"const": False},
+        "diagnostics": {"type": "array", "maxItems": 10, "items": {"type": "object"}},
+        "diagnostics_truncated": {"type": "boolean"},
         "success": {"type": ["boolean", "null"]}, "error_kind": {"type": ["string", "null"]},
         "artifacts": {"type": "array", "maxItems": 20, "items": artifact},
         "diagnostic_summary": {"type": "string", "maxLength": 500}}, ["build_id", "state"]),
@@ -118,5 +125,5 @@ def output_schema(name):
 
 TOOL_SCHEMAS = {name: {"name": name, "inputSchema": deepcopy(schema),
                        "outputSchema": output_schema(name),
-                       "implemented": name != "build_project"}
+                       "implemented": True}
                 for name, schema in _INPUTS.items()}

@@ -1,6 +1,6 @@
 # Contrats et catalogue compact — jalon 2
 
-Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema ; seul `build_project` reste `implemented:false`, sans handler. Aucun `test_project`.
+Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `BuildService.build_project` ajoute au 3c l'orchestration persistante injectable ; **son intégration réelle au propriétaire REST est bloquée**, sans compilateur réel par défaut. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema. Aucun `test_project`.
 
 ## Utilisation locale sans installation
 
@@ -53,7 +53,7 @@ Contrats projet et état au sous-jalon 3a :
 
 Les modifications ciblées `changes` sont `set`/`remove` sur des JSON Pointers RFC 6901 sous `name,boards,fileGroups,folderGroups,components,wires,activeBoardId`. Pour `set`, `value` est obligatoire ; pour `remove`, il est interdit. L'applicateur 3a décode les échappements, refuse les chemins inexistants pour remove, permet l'ajout d'une clé d'objet par set, remplace uniquement un index existant d'un tableau (pas d'insertion implicite), puis valide le **document résultant** et publie un snapshot après CAS. Pas de changement de format/version par patch.
 
-Le schéma du document préserve les objets internes de l'UI, dont options/SPIFFS/SD. Le stockage 3a applique les validations structurelles et quotas décrits ci-dessous ; il ne fait aucune interprétation électrique. Le contrôle 3b reste structurel. `build_project` demeure un contrat seul, sans build ni URL et sans faux succès.
+Le schéma du document préserve les objets internes de l'UI, dont options/SPIFFS/SD. Le stockage 3a applique les validations structurelles et quotas décrits ci-dessous ; il ne fait aucune interprétation électrique. Le contrôle 3b reste structurel. Le build 3c est décrit ci-dessous : aucun vrai firmware n'a été compilé et aucun faux succès réel n'est annoncé.
 
 ## Sous-jalon 3a — snapshots natifs et lecture bornée
 
@@ -131,4 +131,55 @@ Extension locale minimale du store : `projects/<id>/reports/<report_sha>.json` e
 
 Tests 3b : ESP32/e-paper valide structurellement/partial, pins invalides/inconnues, IDs/attrs/panelKind, rôles GPIO/doublons, langue/support, noms et disponibilité des bibliothèques, preuve d'inventaire modifiée/symbolique, v1 exacte après v2 avec tête illisible, rapport complet relisible/hash/bornage/quotas/liens, collisions template/principal/multi-ino et politique changée → unknown. Test explicite accepté : changer `exportedAt` change la version. Régressions catalogue et store 3a conservées.
 
-**STOP au sous-jalon 3b après tests et diff ; attendre une nouvelle consigne.**
+## Jalon 3c — orchestration de build, intégration réelle bloquée
+
+`BuildService(store, checker, adapter=None, toolchains=None)` expose **uniquement** `await build_project(action="start",project_id=…,version=…,board_id=…)` et `await build_project(action="status",build_id=…)`. Aucun mode compile/run/install/cancel supplémentaire. Sans adaptateur, `start` retourne `owner_integration_required`, sans job ni installation. Les seuls callbacks exécutés par les tests sont des **doubles explicitement contrôlés**, jamais un vrai compilateur. Tous leurs résultats persistés et réponses ont `test_only:true`, un résumé « TEST DOUBLE », et des manifests de toolchain `test_only:true`. Un adaptateur ou une preuve de toolchain de production ne devient pas opérationnel par défaut.
+
+### Interface interne propriétaire requise, sans changement de route
+
+La route existante [compile.py:1030](../../../../backend/app/api/routes/compile.py#L1030) possède aujourd'hui le job, l'admission par `build_queue.lane_for` et l'appel `_run_compile` ; [BuildQueue.slot](../../../../backend/app/services/build_queue.py#L325) est lié à **un processus et une boucle**. Le chemin [_run_compile](../../../../backend/app/api/routes/compile.py#L882), notamment [ligne 963](../../../../backend/app/api/routes/compile.py#L963), peut appeler `ensure_core_for_board` et donc installer un core. Aucun import de cette route, appel HTTP, appel `_arduino.compile`, lancement de worker/processus/compiler ou nouvelle file indépendante n'est introduit ici.
+
+`OwnerQueueAdapter(lane_for, compile_offline, test_only=True, name=…)` précise l'interface de raccordement : recevoir **la même fonction et les mêmes gates** que REST, dans son processus/boucle ; attendre `slot(priority=20,key=…)`, notifier `running` seulement après admission, puis appeler une coroutine offline injectée avec les entrées et un callback texte des logs. PID et boucle sont vérifiés. Les tests d'admission utilisent tantôt un gate factice explicite, tantôt **le vrai gate partagé** de `app.services.build_queue` occupé par des admissions simulées, avec compilation toujours factice. Aucune preuve d'intégration REST opérationnelle n'en est déduite.
+
+**Blocage précis pour une intégration réelle ultérieure :** le propriétaire REST doit fournir un hook interne qui conserve admission/priorité/scope/déduplication, appelle une voie de compilation garantie **sans** `ensure-core`, téléchargement ou installation, livre des octets de firmware décodés et des logs, et protège/drain l'exécution contre une déconnexion/annulation. L'orchestrateur ne doit pas être enveloppé dans une deuxième admission de la même file. Ce hook n'existe pas actuellement comme interface offline publique vérifiée ; modifier la route pour le créer reste hors périmètre et nécessite une nouvelle consigne. Aucun contournement ni « fallback Arduino » n'est proposé.
+
+### Préflight et provenance
+
+Chaque `start` charge la version exacte par les primitives sécurisées, exécute `check_project`, vérifie le hash du rapport complet et cherche **l'instance** `board_id`. Il refuse une structure invalide, `compiler_policy_unknown`, une carte/langue sans FQBN documenté, MicroPython/non-compilable, un manifeste absent/non documenté ou une disponibilité de dépendance inconnue. Une dépendance absente d'un inventaire complet vérifié donne `dependency_unavailable` ; aucun install n'est tenté. Les limites électriques/fonctionnelles ne sont pas transformées en faux tests de fonctionnement.
+
+Le payload injecté conserve groupe et ordre des fichiers, options, bibliothèques, langage, SPIFFS et le sous-ensemble natif complet de la carte (SD et champs futurs inclus). SPIFFS passe aussi dans la forme compiler `content_b64`, avec `contentB64` d'origine préservé dans le sous-ensemble natif. La version entière reste la référence ; une v2 ultérieure ne modifie pas un build v1. Le payload interne dérivé, éventuellement redondant entre native/compiler, est borné à **8 MiB**, sans modifier le quota du projet natif.
+
+`ToolchainInventory` étend les preuves locales vérifiées du 3b : un manifeste JSON haché `{kind:"toolchain",name:"<fqbn>|<langage>",version,test_only,members:[{path,sha256}]}` et les octets des membres sont vérifiés par chemins relatifs/parents sans liens. Aucune commande `--version` ni installation. Preuve ≤1 MiB, membre ≤32 MiB, total membres vérifiés ≤64 MiB ; une preuve modifiée/absente/symbolique refuse l'admission. Il s'agit d'un sous-ensemble explicitement épinglé, pas de la certification de toute une installation ESP-IDF et de ses dépendances.
+
+`provenance.json` enregistre projet/version/carte, révision catalogue, hashes des sources/policy/template, version/manifeste/membres de toolchain et preuves de bibliothèques. La version d'une bibliothèque est reprise de son `library.properties` vérifié si disponible, `unknown` sinon. **Reproductibilité limitée et cache partagé interdit restent explicites** : ces preuves ne fixent pas tout l'environnement ni la fermeture transitive des sources. La clé d'idempotence inclut projet/version/carte, payload ordonné, provenance et identité de l'adaptateur ; ce n'est pas un cache de compilation partagé entre projets/utilisateurs. Une évolution du double injecté doit changer son identité `name` pour demander une nouvelle exécution avec les mêmes autres entrées.
+
+### Persistance, concurrence et redémarrage
+
+```text
+<root>/.build-owner.lock
+<root>/build_keys/<request_sha>.json
+<root>/builds/b_<uuid>/input.json
+<root>/builds/b_<uuid>/provenance.json
+<root>/builds/b_<uuid>/job.json
+<root>/builds/b_<uuid>/live.log
+<root>/builds/b_<uuid>/artifacts/<sha>.firmware[.meta.json]
+<root>/builds/b_<uuid>/artifacts/<sha>.build_log[.meta.json]
+```
+
+Une lease `flock` non bloquante, avec vérification d'inode/PID, garantit un seul propriétaire compact. Le verrou global du store protège publication de la clé et transitions de job : deux starts concurrents identiques retournent le même ID et admettent une seule tâche. La tâche est une coroutine de la **même boucle**, jamais un worker/compilateur séparé. États persistés `pending` (attente de gate), `running` (slot acquis), `done`, `error`, `interrupted` ; tout état terminal conserve résultat/défauts et métadonnées d'artefacts.
+
+Quand la lease précédente est libérée après arrêt, un nouveau propriétaire marque les anciens `pending/running` comme `interrupted`, sans inférer un firmware réussi ni relancer automatiquement. Leur log courant est publié comme artefact si le quota le permet. Un start identique reste idempotent et renvoie cet état terminal ; aucune réexécution cachée. Les admissions incomplètes non acquittées sont conservées, sans les faire passer pour des jobs réussis. `close()` annule uniquement les coroutines de tests autorisées à ce jalon et libère la lease ; une future intégration réelle devra remplacer cette fermeture par le drain/shield propriétaire documenté ci-dessus.
+
+### Artefacts, logs et erreurs bornés
+
+Les callbacks livrent du texte UTF-8 ; `live.log` garde la queue ≤**1 MiB d'octets**, avec `log_truncated` explicite et sans découper un caractère. À terminaison/interruption, un artefact de log **immuable** est publié. Un résultat d'adaptateur n'est réussi que s'il contient `success:true` et des octets de firmware non vides de type bin/hex/uf2/elf, ≤**32 MiB**. Les réponses contiennent uniquement IDs, tailles, types, hashes et diagnostics, jamais les octets/base64 du firmware ou des fichiers SPIFFS.
+
+`read_artifact` comprend désormais `firmware` et `build_log`, en préservant `.vlx` et `check_report` : manifestes croisés artefact/build/projet/version, hash/taille contrôlés, parents/FD sans liens, tranches ≤12 KiB et réponse ≤24 KiB. Les octets arbitraires se lisent en base64 ; UTF-8 n'est accepté que pour une tranche valide. La vérification lit/hache le fichier entier, donc jusqu'à 32 MiB en mémoire par lecture, sans exposer un dump massif dans la réponse.
+
+Les diagnostics sont **issus des logs** `fichier:ligne[:colonne]: severity: message` : fichier/ligne/colonne rapportés, sévérité, message borné, ID/hash du log et numéro de ligne dans le log conservé. Au plus 100 diagnostics persistés/10 retournés (moins si nécessaire pour 24 KiB), avec marqueur de troncature ; le log reste la source complète **dans sa limite de 1 MiB**. Un `source_file_hint` pour `sketch.ino.cpp` n'est qu'un indice : `line_mapping_verified:false`, aucune correspondance de ligne native n'est inventée. Les codes d'erreurs du double sont conservés dans les classes connues ou classés `compile_error`/`adapter_error`/`invalid_compiler_result`, sans transformer une exception en réussite.
+
+Quota global **256 MiB**, commun aux snapshots/rapports/jobs/inputs/logs/firmwares ; refus net et fichiers conservés, sans purge, changement de racine/moteur ou auto-install. Le job initial réserve 8 KiB de métadonnées pour pouvoir enregistrer un échec compact même à la limite. Publication par les primitives temp/fsync/rename du store ; les artefacts peuvent rester orphelins après une interruption avant publication du job terminal et restent comptés. Aucune transaction multi-fichiers ni garantie contre un administrateur modifiant le volume n'est prétendue.
+
+Vérifications : vrais octets factices et faux compilateurs contrôlés, v1 après v2, carte/groupe exacts, starts concurrents/idempotence, gate partagé occupé, lease exclusive, redémarrage pending/running/interrupted, erreurs et diagnostics sourcés, logs tronqués UTF-8, firmware binaire/UTF-8/hashes/quotas/liens, preuves modifiées et refus de dépendances/support/policy inconnus, absence de callback/install en intégration par défaut. Ajouter ces tests aux **59 régressions** : `python3 -m unittest discover -s test/backend/unit -p 'test_mcp_compact*.py' -q`.
+
+**STOP au jalon 3c après tests et diff ; attendre une nouvelle consigne.**

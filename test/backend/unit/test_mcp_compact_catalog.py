@@ -13,7 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "backend"))
-from app.mcp.compact import Catalog, ProjectChecker, ProjectStore, TOOL_SCHEMAS
+from app.mcp.compact import BuildService, Catalog, ProjectChecker, ProjectStore, TOOL_SCHEMAS
 from app.mcp.compact.catalog import encoded
 from app.mcp.compact.contracts import MAX_RESPONSE_BYTES
 
@@ -156,7 +156,7 @@ class CompactCatalogTests(unittest.TestCase):
     def test_no_fake_handlers_and_exactly_six_schemas(self):
         self.assertEqual(set(TOOL_SCHEMAS), {"search_catalog", "get_reference", "save_project", "check_project", "build_project", "read_artifact"})
         for name, spec in TOOL_SCHEMAS.items():
-            self.assertEqual(hasattr(self.catalog, name) or hasattr(ProjectStore, name) or hasattr(ProjectChecker, name), spec["implemented"])
+            self.assertEqual(hasattr(self.catalog, name) or hasattr(ProjectStore, name) or hasattr(ProjectChecker, name) or hasattr(BuildService, name), spec["implemented"])
 
     def test_raw_input_original_bytes_are_preserved(self):
         for raw in self.catalog._snapshot["raw_inputs"]:

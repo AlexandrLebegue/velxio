@@ -19,7 +19,7 @@ from .catalog import CatalogError, bounded
 from .contracts import MAX_PROJECT_BYTES, MAX_RESPONSE_BYTES
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-ID = re.compile(r"^[pa]_[0-9a-f]{32}$")
+ID = re.compile(r"^[pab]_[0-9a-f]{32}$")
 VERSION = re.compile(r"^[0-9a-f]{64}$")
 PATCH_ROOTS = {"name", "boards", "fileGroups", "folderGroups", "components", "wires", "activeBoardId"}
 
@@ -329,7 +329,7 @@ class ProjectStore:
 
     def _publish(self, parent, name, raw, replace=False):
         try:
-            old = self._read(parent, name)
+            old = self._read(parent, name, max(MAX_PROJECT_BYTES, len(raw)))
         except FileNotFoundError:
             old = None
         if old is not None and not replace:
@@ -472,15 +472,25 @@ class ProjectStore:
                 if not isinstance(meta["version"], str) or not VERSION.fullmatch(meta["version"]) or meta["artifact_id"] != artifact_id:
                     fail("integrity_error", "Invalid artifact mapping")
                 kind = meta.get("kind", "project")
-                if kind not in ("project", "check_report"):
+                if kind not in ("project", "check_report", "firmware", "build_log"):
                     fail("integrity_error", "Unsupported artifact kind")
-                digest = meta["version"] if kind == "project" else meta.get("report_hash")
+                digest = meta["version"] if kind == "project" else meta.get("report_hash") if kind == "check_report" else meta.get("blob_hash")
                 if not isinstance(digest, str) or not VERSION.fullmatch(digest):
                     fail("integrity_error", "Invalid artifact digest")
-                with self._directory(root, "projects") as projects, self._directory(projects, meta["project_id"]) as project, self._directory(project, "versions" if kind == "project" else "reports") as versions:
-                    if json.loads(self._read(versions, digest + (".json" if kind == "project" else ".meta.json"), 4096)) != meta:
-                        fail("integrity_error", "Artifact does not belong to this project version")
-                    raw = self._read(versions, digest + (".vlx" if kind == "project" else ".json"))
+                if kind in ("firmware", "build_log"):
+                    self._id(meta["build_id"], "b")
+                    with self._directory(root, "builds") as builds, self._directory(builds, meta["build_id"]) as build, self._directory(build, "artifacts") as blobs:
+                        job = json.loads(self._read(build, "job.json"))
+                        if job["project_id"] != meta["project_id"] or job["version"] != meta["version"] or not any(a["id"] == artifact_id for a in job.get("artifacts", [])):
+                            fail("integrity_error", "Artifact does not belong to this build")
+                        if json.loads(self._read(blobs, digest + "." + kind + ".meta.json", 4096)) != meta:
+                            fail("integrity_error", "Build artifact manifest differs")
+                        raw = self._read(blobs, digest + "." + kind, 32 * 1024 * 1024 if kind == "firmware" else 1024 * 1024)
+                else:
+                    with self._directory(root, "projects") as projects, self._directory(projects, meta["project_id"]) as project, self._directory(project, "versions" if kind == "project" else "reports") as versions:
+                        if json.loads(self._read(versions, digest + (".json" if kind == "project" else ".meta.json"), 4096)) != meta:
+                            fail("integrity_error", "Artifact does not belong to this project version")
+                        raw = self._read(versions, digest + (".vlx" if kind == "project" else ".json"))
                 if hashlib.sha256(raw).hexdigest() != meta["sha256"] or meta["sha256"] != digest or len(raw) != meta["size_bytes"]:
                     fail("integrity_error", "Artifact size/hash mismatch")
                 if offset > len(raw):
@@ -507,6 +517,30 @@ class ProjectStore:
                     result.update(data=raw[offset:end].decode("utf-8"), next_offset=end, eof=False, truncated=True)
                 return result
         return self._response(run)
+
+    def _build_blob(self, root, build, job, kind, raw):
+        if kind not in ("firmware", "build_log") or not isinstance(raw, bytes):
+            fail("invalid_argument", "Invalid build artifact")
+        if len(raw) > (32 * 1024 * 1024 if kind == "firmware" else 1024 * 1024):
+            fail("quota_exceeded", "Build artifact exceeds its byte quota")
+        digest = hashlib.sha256(raw).hexdigest()
+        with self._directory(build, "artifacts", True) as blobs, self._directory(root, "artifacts") as artifacts:
+            name = digest + "." + kind
+            try:
+                meta = json.loads(self._read(blobs, name + ".meta.json", 4096))
+            except FileNotFoundError:
+                meta = {"kind": kind, "artifact_id": "a_" + uuid.uuid4().hex, "project_id": job["project_id"],
+                        "version": job["version"], "build_id": job["build_id"], "blob_hash": digest, "sha256": digest, "size_bytes": len(raw)}
+            self._id(meta["artifact_id"], "a")
+            if meta != {"kind": kind, "artifact_id": meta["artifact_id"], "project_id": job["project_id"], "version": job["version"], "build_id": job["build_id"], "blob_hash": digest, "sha256": digest, "size_bytes": len(raw)}:
+                fail("integrity_error", "Build artifact metadata differs")
+            metadata = canonical(meta)
+            if self._usage(root) + len(raw) + 2 * len(metadata) > self.max_storage_bytes:
+                fail("quota_exceeded", "Storage quota reached; existing files retained")
+            self._publish(blobs, name, raw)
+            self._publish(blobs, name + ".meta.json", metadata)
+            self._publish(artifacts, meta["artifact_id"] + ".json", metadata)
+        return {"id": meta["artifact_id"], "kind": kind, "sha256": digest, "size_bytes": len(raw)}
 
     def _load_version(self, root, project_id, version):
         """Exact immutable snapshot only; deliberately never reads head.json."""
