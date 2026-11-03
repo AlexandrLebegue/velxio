@@ -1,4 +1,4 @@
-"""JSON Schema contracts only: the four mutating/build tools have no handlers."""
+"""Six independent contracts; check_project/build_project have no handlers."""
 
 from copy import deepcopy
 
@@ -111,5 +111,5 @@ def output_schema(name):
 
 TOOL_SCHEMAS = {name: {"name": name, "inputSchema": deepcopy(schema),
                        "outputSchema": output_schema(name),
-                       "implemented": name in ("search_catalog", "get_reference")}
+                       "implemented": name in ("search_catalog", "get_reference", "save_project", "read_artifact")}
                 for name, schema in _INPUTS.items()}
