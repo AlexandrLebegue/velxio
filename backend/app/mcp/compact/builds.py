@@ -66,7 +66,10 @@ class ToolchainInventory(LibraryInventory):
                 if total > 64 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != member["sha256"]:
                     fail("preflight_unknown", "Toolchain member hash/size differs")
             toolchains[name] = {"version": doc["version"], "manifest_sha256": entry["sha256"], "members": members,
-                                "test_only": doc.get("test_only") is True}
+                                "test_only": doc.get("test_only") is True, "inventory_root": self.root}
+            for field in ('idf_root', 'arduino_root', 'managed_components'):
+                if field in doc:
+                    toolchains[name][field] = copy.deepcopy(doc[field])
             if 'arduino_core' in doc:
                 core = doc['arduino_core']
                 if not isinstance(core, dict) or core.get('id') != ':'.join(name.split('|')[0].split(':')[:2]) or not isinstance(core.get('version'), str) or not core['version']:
@@ -232,7 +235,8 @@ class BuildService:
             if hashlib.sha256(raw).hexdigest() != evidence["sha256"]:
                 fail("dependencies_unknown", "Library proof changed after structural preflight")
             match = re.search(rb"(?m)^version\s*=\s*([^\r\n]+)", raw)
-            lib_proof[name] = {**evidence, "version": match[1].decode("utf8")[:200] if match else "unknown"}
+            lib_proof[name] = {**evidence, **{k: copy.deepcopy(v) for k, v in self.checker.inventory.entries[name].items() if k in ('source_root', 'tree_sha256')},
+                               "version": match[1].decode("utf8")[:200] if match else "unknown"}
         provenance = {"project_id": pid, "version": version, "board_id": board_id, "catalog_revision": self.checker.catalog.revision,
                       "compiler_policy_sources": report["compiler_policy_sources"], "toolchain": toolchain, "libraries": lib_proof,
                       "adapter": {"name": self.adapter.name, "test_only": self.adapter.test_only},

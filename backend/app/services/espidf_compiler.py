@@ -5712,26 +5712,61 @@ class ESPIDFCompiler:
         return original
 
     def offline_capabilities(self):
-        return {'ready': False, 'blockers': ['idf_component_manager_fetch_and_heal', 'idf_replica_warmup', 'external_cmake_scripts_not_network_isolated']}
+        from app.services.espidf_offline import approved_template
+        ready = approved_template(_TEMPLATE_DIR)
+        return {'ready': ready, 'blockers': [] if ready else ['approved_template_hash_mismatch'],
+                'scope': 'esp32-approved-template-no-auto-acquisition', 'os_network_isolation': False}
 
     async def compile_offline(self, files, board_fqbn, *, offline_evidence=None, library_proofs=None,
                               board_options=None, allowed_libraries=None, owner_id=None,
                               progress_callback=None, spiffs_files=None, pure_idf=False, cpu_nice=None):
-        """Internal offline entry: explicitly block unaudited external configure.
-
-        The normal compile path can warm replicas, synchronize managed component
-        manifests, fetch during configure and heal/reconfigure downloaded trees.
-        No ordinary compile/fallback is called until that closure is isolated.
-        """
+        """ESP32 approved template, local pinned inputs, no automatic acquisition."""
+        from app.services.espidf_offline import OfflinePlan, validate_sources, verify_sdk, approved_template
         if not board_fqbn.startswith('esp32:'):
             return {'success': False, 'error_kind': 'unsupported', 'stdout': '', 'stderr': ''}
         if not offline_evidence or not offline_evidence.get('members'):
             return {'success': False, 'error_kind': 'toolchain_unknown', 'error': 'Pinned local IDF evidence required', 'stdout': '', 'stderr': ''}
         if allowed_libraries is None or set(allowed_libraries) - set(library_proofs or {}):
             return {'success': False, 'error_kind': 'dependency_unavailable', 'error': 'Closed verified dependency scope required', 'stdout': '', 'stderr': ''}
-        return {'success': False, 'error_kind': 'offline_guard_unavailable',
-                'error': 'IDF/CMake managed downloads, replica warmup and configure healing are not offline-isolated; no compiler executed',
-                'stdout': '', 'stderr': ''}
+        try:
+            validate_sources(files)
+            if not self.available:
+                raise ValueError('Local ESP-IDF toolchain is unavailable')
+            target = self._idf_target(board_fqbn)
+            arduino_mode = self._arduino_supports_target(target) and not pure_idf
+            if not pure_idf and not arduino_mode:
+                raise ValueError('Local ESP32 Arduino-as-IDF component is unavailable; no fallback')
+            use_idf5 = self._use_idf5(target, arduino_mode)
+            expected_idf = Path(offline_evidence['idf_root'])
+            if expected_idf != Path(self._idf_root(use_idf5) or self.idf_path):
+                raise ValueError('Verified IDF root does not match selected backend SDK')
+            if arduino_mode and Path(offline_evidence['arduino_root']) != Path(self._arduino_path_for(use_idf5)):
+                raise ValueError('Verified Arduino component root differs')
+            verify_sdk(offline_evidence, expected_idf, self._arduino_path_for(use_idf5) if arduino_mode else None)
+            if spiffs_files and self._locate_mkspiffs() is None:
+                raise ValueError('SPIFFS tool is missing; no installation or silent file loss')
+            required = self._detect_managed_components('\n'.join(f['content'] for f in files))
+            plan = OfflinePlan(_TEMPLATE_DIR, offline_evidence, library_proofs or {}, required,
+                               offline_evidence.get('managed_components', []))
+            options = self._normalize_options(board_options, target, board_fqbn)
+            identity = hashlib.sha256(json.dumps({'offline': True, 'files': files, 'options': options,
+                'evidence': offline_evidence, 'libraries': library_proofs}, sort_keys=True).encode()).hexdigest()[:12]
+            async with _variant_lock(_variant_lock_key(target, identity)):
+                # Ephemeral approved-template tree: no inherited managed cache,
+                # replica warmup, LRU eviction or automatic retry path.
+                with tempfile.TemporaryDirectory(prefix='espidf_offline_') as temporary:
+                    project = Path(temporary) / 'project'
+                    shutil.copytree(_TEMPLATE_DIR, project)
+                    if not approved_template(project):
+                        raise ValueError('Template changed while staging')
+                    scope = Path(temporary) / 'libraries'
+                    scope.mkdir()
+                    plan.stage(project, scope)
+                    return await self._compile_in_dir(project, files, target, progress_callback, options, spiffs_files,
+                        allowed_libraries=allowed_libraries, libraries_dir=scope, arduino_mode=arduino_mode,
+                        use_idf5=use_idf5, pure_idf=pure_idf, board_fqbn=board_fqbn, cpu_nice=cpu_nice, _offline_plan=plan)
+        except (ValueError, KeyError, OSError) as exc:
+            return {'success': False, 'error_kind': 'dependency_unavailable', 'error': str(exc), 'stdout': '', 'stderr': str(exc)}
 
     async def _compile_in_dir(
         self,
@@ -5751,6 +5786,7 @@ class ESPIDFCompiler:
         denied_libraries: set[str] | None = None,
         speculative_out: set[str] | None = None,
         cpu_nice: int | None = None,
+        _offline_plan=None,
     ) -> dict:
         """Inner compile body: writes sketch + libs into `project_dir`,
         runs cmake + ninja, merges binaries. Caller is responsible for
@@ -5958,9 +5994,12 @@ class ESPIDFCompiler:
                     ('.ino', '.cpp', '.c', '.h', '.hpp')
                 )
             )
-            manifest_changed = self._sync_managed_components(
-                project_dir, self._detect_managed_components(pure_src),
-            )
+            if _offline_plan is None:
+                manifest_changed = self._sync_managed_components(
+                    project_dir, self._detect_managed_components(pure_src),
+                )
+            else:
+                _offline_plan.check_managed(self._detect_managed_components(pure_src))
         elif arduino_mode:
             # Arduino-as-component mode: copy sketch as .cpp
             sketch_cpp = project_dir / 'main' / 'sketch.ino.cpp'
@@ -6089,12 +6128,15 @@ class ESPIDFCompiler:
                     ('.ino', '.cpp', '.c', '.h', '.hpp')
                 )
             )
-            manifest_changed = self._sync_managed_components(
-                project_dir,
-                self._without_merged_duplicates(
-                    self._detect_managed_components(sketch_src), merged_libs_report
-                ),
-            )
+            if _offline_plan is None:
+                manifest_changed = self._sync_managed_components(
+                    project_dir,
+                    self._without_merged_duplicates(
+                        self._detect_managed_components(sketch_src), merged_libs_report
+                    ),
+                )
+            else:
+                _offline_plan.check_managed(self._without_merged_duplicates(self._detect_managed_components(sketch_src), merged_libs_report))
 
             # Components that live in the IDF tree (esp_lcd, esp_mm...) need no
             # line here any more: main names no REQUIRES, so it depends on every
@@ -6115,9 +6157,12 @@ class ESPIDFCompiler:
                     ('.ino', '.cpp', '.c', '.h', '.hpp')
                 )
             )
-            manifest_changed = self._sync_managed_components(
-                project_dir, self._detect_managed_components(idf_src),
-            )
+            if _offline_plan is None:
+                manifest_changed = self._sync_managed_components(
+                    project_dir, self._detect_managed_components(idf_src),
+                )
+            else:
+                _offline_plan.check_managed(self._detect_managed_components(idf_src))
 
             if self._contains_app_main(main_content):
                 # The user's code is already a plain ESP-IDF program —
@@ -6246,6 +6291,8 @@ class ESPIDFCompiler:
             idf_target, use_idf5=use_idf5, arduino_mode=arduino_mode,
             pure_idf=pure_idf,
         )
+        if _offline_plan is not None:
+            env = _offline_plan.environment(env)
 
         # Step 1: cmake configure
         cmake_cmd = [
@@ -6262,6 +6309,8 @@ class ESPIDFCompiler:
             '-DPYTHON_DEPS_CHECKED=1',
             str(project_dir),
         ]
+        if _offline_plan is not None:
+            cmake_cmd.extend(['-DIDF_COMPONENT_MANAGER=0', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON', '-DFETCHCONTENT_UPDATES_DISCONNECTED=ON'])
 
         # ccache: ESP-IDF's tools/cmake/project.cmake enables ccache iff
         # the CMake variable `CCACHE_ENABLE` is truthy. We don't go through
@@ -6314,7 +6363,7 @@ class ESPIDFCompiler:
                 # once more instead of failing every compile of this variant
                 # until the dir is deleted by hand.
                 corrupt = _corrupt_managed_component(cmake_result.stderr)
-                if corrupt and _heal_corrupt_managed_components(project_dir, build_dir):
+                if _offline_plan is None and (corrupt and _heal_corrupt_managed_components(project_dir, build_dir)):
                     logger.warning(
                         f'[espidf] managed component "{corrupt}" corrupted in '
                         f'{project_dir}; dropped managed_components/ and reconfiguring'
@@ -6340,7 +6389,7 @@ class ESPIDFCompiler:
             # The configure above fetched managed components; give esp32p4 its
             # patched esp_hosted override, and reconfigure once when it appears
             # so the build system adopts the components/ dir.
-            if idf_target == 'esp32p4' and arduino_mode:
+            if _offline_plan is None and (idf_target == 'esp32p4' and arduino_mode):
                 if self._override_esp_hosted_with_race_fix(project_dir):
                     try:
                         cmake_result = await asyncio.to_thread(_run_cmake)
@@ -6402,7 +6451,7 @@ class ESPIDFCompiler:
         ninja_t0 = time.monotonic()
         try:
             ninja_result = await asyncio.to_thread(_run_ninja)
-            if (
+            if _offline_plan is None and (
                 configure_skipped
                 and ninja_result.returncode != 0
                 and _ninja_failure_wants_configure(ninja_result)
@@ -6420,7 +6469,7 @@ class ESPIDFCompiler:
                 if configure_error is not None:
                     return configure_error
                 ninja_result = await asyncio.to_thread(_run_ninja)
-            if (
+            if _offline_plan is None and (
                 ninja_result.returncode != 0
                 and arduino_mode
                 and (project_dir / 'main' / 'main.cpp').is_file()

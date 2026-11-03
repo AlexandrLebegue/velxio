@@ -58,7 +58,7 @@ class RestCompileOwner:
     @property
     def production_blockers(self):
         blockers = []
-        for service in (self.idf, self.arduino):
+        for service in (self.idf,):  # ESP32-only production scope; Arduino stays unsupported.
             capability = service.offline_capabilities()
             if not capability.get('ready'):
                 blockers.extend(capability.get('blockers') or ['offline_service_capability_unknown'])
@@ -106,6 +106,8 @@ class RestCompileOwner:
             result = await self.idf.compile_offline(payload["files"], payload["board_fqbn"],
                 progress_callback=log, spiffs_files=payload.get("spiffs_files"), pure_idf=payload.get("language") == "espidf", cpu_nice=nice, **common)
         else:
+            if not self.test_only:
+                fail('unsupported', 'Offline production scope is ESP32 with approved template only')
             if payload.get("language") != "arduino":
                 fail("unsupported", "Only installed Arduino cores support this offline branch")
             result = await self.arduino.compile_offline(payload["files"], payload["board_fqbn"], **common)
@@ -139,7 +141,7 @@ class BoundOfflineAdapter:
 
     @property
     def blocker(self):
-        return ("offline_guard_unavailable", "Real owner hook exists, but transitive CMake/IDF component-manager and platform recipe network/install behavior is not yet isolated/audited. Production compilation remains blocked.")
+        return ("offline_guard_unavailable", "ESP32 production requires the reviewed template capability and verified local SDK/dependency proofs; other Arduino platforms remain unsupported. No OS network sandbox is claimed.")
 
     @property
     def ready(self):

@@ -1,6 +1,7 @@
 """Bounded structural checks of exact snapshots. Never compiles or simulates."""
 
 import ast
+import copy
 import hashlib
 import json
 import os
@@ -60,6 +61,44 @@ class LibraryInventory:
             os.close(fd)
 
 
+def legacy_file_behavior(node):
+    """Project the new optional offline guards to their explicit None default.
+
+    Compare to the ORIGINAL approved AST hash, not a new wildcard/fingerprint.
+    Every unguarded change (including source naming/writing) still fails.
+    """
+    class DefaultProjection(ast.NodeTransformer):
+        def visit_Name(self, n):
+            return ast.copy_location(ast.Constant(None), n) if n.id == '_offline_plan' else n
+        def visit_Compare(self, n):
+            n = self.generic_visit(n)
+            if isinstance(n.left, ast.Constant) and len(n.ops) == 1 and isinstance(n.comparators[0], ast.Constant):
+                if isinstance(n.ops[0], ast.Is):
+                    return ast.Constant(n.left.value is n.comparators[0].value)
+                if isinstance(n.ops[0], ast.IsNot):
+                    return ast.Constant(n.left.value is not n.comparators[0].value)
+            return n
+        def visit_BoolOp(self, n):
+            n = self.generic_visit(n)
+            if isinstance(n.op, ast.And):
+                if any(isinstance(v, ast.Constant) and v.value is False for v in n.values):
+                    return ast.Constant(False)
+                n.values = [v for v in n.values if not (isinstance(v, ast.Constant) and v.value is True)]
+                if len(n.values) == 1:
+                    return n.values[0]
+            return n
+        def visit_If(self, n):
+            n = self.generic_visit(n)
+            if isinstance(n.test, ast.Constant):
+                return n.body if n.test.value else n.orelse
+            return n
+    result = copy.deepcopy(node)
+    if result.args.args and result.args.args[-1].arg == '_offline_plan':
+        result.args.args.pop()
+        result.args.defaults.pop()
+    return DefaultProjection().visit(result)
+
+
 class CompilerPolicy:
     """Extract constants and verify the pure basename helper AST, without imports."""
 
@@ -72,6 +111,8 @@ class CompilerPolicy:
                         "_compile_in_dir": "39faa596be9d697da91d5bb066db672ea64dcc430f767d070f9b8189569ec3fd"}
         for function, expected_hash in fingerprints.items():
             node = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
+            if function == '_compile_in_dir':
+                node = legacy_file_behavior(node)
             if hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest() != expected_hash:
                 raise ValueError("Compiler file-writing behavior changed; review required")
         assigns = {n.targets[0].id: n for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}

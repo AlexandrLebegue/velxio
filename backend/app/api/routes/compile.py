@@ -48,7 +48,7 @@ async def _compact_offline_lifespan(app):
         return
     owner.activate(app)
     _COMPACT_OFFLINE_OWNER = owner
-    logger.info('Compact offline REST owner registered pid=%s; production execution blocked pending offline guard', owner.pid)
+    logger.info('Compact offline REST owner registered pid=%s; ESP32 capability blockers=%s; OS network isolation not provided', owner.pid, owner.production_blockers)
     try:
         yield
     finally:

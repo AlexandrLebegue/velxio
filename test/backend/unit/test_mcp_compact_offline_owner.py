@@ -164,7 +164,7 @@ class OfflineOwnerTests(unittest.IsolatedAsyncioTestCase):
         result = await idf(service, [], 'esp32:esp32:esp32', offline_evidence={'members': ['CONTROLLED']}, allowed_libraries={'missing'}, library_proofs={})
         self.assertEqual(result['error_kind'], 'dependency_unavailable')
         result = await idf(service, [], 'esp32:esp32:esp32', offline_evidence={'members': ['CONTROLLED']}, allowed_libraries=set(), library_proofs={})
-        self.assertEqual(result['error_kind'], 'offline_guard_unavailable')
+        self.assertEqual(result['error_kind'], 'dependency_unavailable')
         forbidden.assert_not_awaited()
 
     async def test_existing_file_behavior_fingerprints_still_match(self):
