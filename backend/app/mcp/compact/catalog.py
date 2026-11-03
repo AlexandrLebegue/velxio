@@ -45,6 +45,18 @@ class Catalog:
                 self._aliases.setdefault(alias, set()).add(entry["id"])
 
     @classmethod
+    def from_snapshot(cls, path):
+        path = Path(path)
+        with path.open('rb') as stream:
+            raw = stream.read(32 * 1024 * 1024 + 1)
+        if len(raw) > 32 * 1024 * 1024:
+            raise CatalogError('quota_exceeded', 'Catalog snapshot exceeds 32 MiB')
+        expected = path.with_suffix(path.suffix + '.sha256').read_text().strip()
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise CatalogError('invalid_catalog', 'Snapshot SHA256 differs from packaged manifest')
+        return cls(json.loads(raw))
+
+    @classmethod
     def from_repository(cls, root: str | Path):
         root = Path(root).resolve()
         try:

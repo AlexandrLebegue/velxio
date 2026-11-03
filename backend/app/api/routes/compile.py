@@ -52,6 +52,9 @@ async def _compact_offline_lifespan(app):
     try:
         yield
     finally:
+        runtime = getattr(app.state, 'compact_runtime', None)
+        if runtime is not None:
+            await runtime.close()
         await owner.close()
         _COMPACT_OFFLINE_OWNER = None
 

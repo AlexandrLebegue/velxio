@@ -18,11 +18,11 @@ class LibraryInventory:
         self.root, self.entries, self.complete = os.fspath(root), entries, complete
 
     def verify(self):
-        if not os.path.isabs(self.root) or any(p in ("", ".", "..") for p in self.root.split("/")[1:]):
+        if not os.path.isabs(self.root) or self.root != "/" and any(p in ("", ".", "..") for p in self.root.split("/")[1:]):
             fail("inventory_invalid", "Inventory root must be an absolute directory")
         fd = os.open("/", DIR_FLAGS)
         try:
-            for part in self.root.split("/")[1:]:
+            for part in ([] if self.root == "/" else self.root.split("/")[1:]):
                 child = os.open(part, DIR_FLAGS, dir_fd=fd)
                 os.close(fd)
                 fd = child

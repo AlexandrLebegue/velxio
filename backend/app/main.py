@@ -49,7 +49,8 @@ async def lifespan(_app: FastAPI):
     # private overlay's register_pro() can add more. Running zero hooks is
     # the expected behavior of a stateless OSS image.
     await run_lifespan_startup()
-    yield
+    async with _app.state.compact_lifespan():
+        yield
 
 
 app = FastAPI(
@@ -191,3 +192,9 @@ def health_libcache():
     detail = health_detail()
     return detail if detail is not None else {"status": "healthy", "overlay": "oss"}
 
+
+# Last mount: exact /mcp is handled inside the child (no slash redirect).
+# FastMCP shares this REST process, loop, lifespan and compiler owner.
+from app.mcp.compact.facade import create_facade
+_compact_transport, app.state.compact_lifespan, app.state.compact_runtime = create_facade(app)
+app.mount('/', _compact_transport, name='compact-mcp')

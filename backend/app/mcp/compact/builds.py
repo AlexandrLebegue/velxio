@@ -20,11 +20,11 @@ OWNER_BLOCKER = ("REST owner bridge required: bind the existing build_queue.lane
 
 def proof_bytes(root, relative, maximum=32 * 1024 * 1024):
     filename(relative)
-    if not os.path.isabs(root) or any(p in ("", ".", "..") for p in root.split("/")[1:]):
+    if not os.path.isabs(root) or root != "/" and any(p in ("", ".", "..") for p in root.split("/")[1:]):
         fail("preflight_unknown", "Invalid proof root")
     fd = os.open("/", DIR_FLAGS)
     try:
-        for part in root.split("/")[1:] + relative.split("/")[:-1]:
+        for part in ([] if root == "/" else root.split("/")[1:]) + relative.split("/")[:-1]:
             child = os.open(part, DIR_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = child
@@ -297,7 +297,7 @@ class BuildService:
                         self.store._publish(build, "provenance.json", canonical(provenance))
                         self._write(root, build, job)
                     self.store._publish(keys, request_key + ".json", canonical({"build_id": build_id}))
-            task = asyncio.create_task(self._run(build_id, request))
+            task = asyncio.create_task(self._run(build_id, request, adapter=self.adapter))
             self.tasks[build_id] = task
             return self._status(job)
         return self.store._response(operation)
@@ -361,9 +361,9 @@ class BuildService:
             job.update(state="error", success=False, error_kind=code, diagnostics=[], diagnostic_summary=("TEST DOUBLE" if job["test_only"] else "Offline owner") + " failed: " + code + "; existing files retained")
             self._write(root, build, job)
 
-    async def _run(self, build_id, request):
+    async def _run(self, build_id, request, *, adapter=None):
         try:
-            result = await self.adapter.compile(request, lambda: self._event(build_id, running=True), lambda line: self._event(build_id, log=line))
+            result = await (adapter or self.adapter).compile(request, lambda: self._event(build_id, running=True), lambda line: self._event(build_id, log=line))
         except asyncio.CancelledError:
             return  # Deliberately leave pending/running for next-owner recovery.
         except Exception as exc:
