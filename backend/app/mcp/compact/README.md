@@ -1,6 +1,6 @@
 # Contrats et catalogue compact — jalon 2
 
-Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema ; `implemented:false` reste limité à `check_project`/`build_project`, sans handlers. Aucun `test_project`.
+Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema ; seul `build_project` reste `implemented:false`, sans handler. Aucun `test_project`.
 
 ## Utilisation locale sans installation
 
@@ -53,7 +53,7 @@ Contrats projet et état au sous-jalon 3a :
 
 Les modifications ciblées `changes` sont `set`/`remove` sur des JSON Pointers RFC 6901 sous `name,boards,fileGroups,folderGroups,components,wires,activeBoardId`. Pour `set`, `value` est obligatoire ; pour `remove`, il est interdit. L'applicateur 3a décode les échappements, refuse les chemins inexistants pour remove, permet l'ajout d'une clé d'objet par set, remplace uniquement un index existant d'un tableau (pas d'insertion implicite), puis valide le **document résultant** et publie un snapshot après CAS. Pas de changement de format/version par patch.
 
-Le schéma du document préserve les objets internes de l'UI, dont options/SPIFFS/SD. Le stockage 3a applique désormais les validations structurelles et quotas décrits ci-dessous ; il ne fait aucune interprétation électrique. `check_project` et `build_project` restent des contrats seuls, sans build ni URL et sans faux succès.
+Le schéma du document préserve les objets internes de l'UI, dont options/SPIFFS/SD. Le stockage 3a applique les validations structurelles et quotas décrits ci-dessous ; il ne fait aucune interprétation électrique. Le contrôle 3b reste structurel. `build_project` demeure un contrat seul, sans build ni URL et sans faux succès.
 
 ## Sous-jalon 3a — snapshots natifs et lecture bornée
 
@@ -101,4 +101,34 @@ Tests ciblés par `unittest` et validation des six schémas avec Ajv local : dé
 
 Tests 3a stdlib : redémarrage, champs UI natifs, ancien snapshot/idempotence, CAS à deux vrais processus (un gagnant), RFC6901/allowlist/validation résultante, échecs avant publication de tête/manifeste et reprise, fsync/temp, quotas, encodages/noms/collisions, racine/parents/fichiers/verrou/index symboliques et hardlinks, traversée/isolation et hashes. Ajouter aux 20 régressions catalogue : `python3 -m unittest discover -s test/backend/unit -p 'test_mcp_compact*.py' -v`.
 
-**STOP au sous-jalon 3a après tests et diff ; attendre une nouvelle consigne.**
+## Sous-jalon 3b — contrôle exact et artefact de rapport
+
+```python
+from app.mcp.compact import Catalog, ProjectChecker, ProjectStore
+store = ProjectStore(temporary_root)
+checker = ProjectChecker(store, Catalog.from_repository(repository_root))
+result = checker.check_project(project_id=saved_id, version=exact_sha256)
+page = store.read_artifact(artifact_id=result['diagnostic_artifact_id'])
+```
+
+`check_project` accepte exactement `project_id` et un hash `version`, jamais `latest`, une tête implicite ou un chemin. Il charge `.vlx`/manifeste/index par les primitives sécurisées du store, vérifie le hash et la validation native ; **`head.json` n'est jamais lu**. Une v1 reste contrôlable après v2. Juste avant la publication du rapport, la même version est revérifiée sous `flock` exclusif. Aucun snapshot/tête n'est modifié.
+
+Contrôles : IDs et références du document natif ; IDs de cartes/composants dans la révision exacte du catalogue injecté ; types/options/min/max des attributs connus et `panelKind` ; board/langage documenté ; noms déclarés des dépendances ; endpoints et listes de pins documentées ESP32/e-paper. Une propriété, une liste de broches, un nom de bibliothèque ou un support non documenté produit **`unknown`**, jamais une documentation ni une disponibilité inventées. Les aliases physiques ESP32 16/RX2 et 17/TX2 sont reconnus par coordonnées des pins sources.
+
+Les connexions physiques non orientées répétées sont signalées. Le contrôle détecte un même net GPIO raccordé à plusieurs rôles distincts SCK/SDI/CS/DC/RST **du même panneau** e-paper : chevauchement structurel, sans mesure de tension ou assertion sur l'exécution du firmware. Des GPIOs multiples sur un net produisent une direction `unknown`, pas une panne électrique supposée. Le partage normal d'un même signal SPI entre plusieurs panneaux n'est pas une erreur.
+
+Les noms du template ne sont pas une liste métier inventée : `CompilerPolicy` parse l'AST local de `espidf_compiler.py`, extrait `_MAIN_RESERVED_NAMES`, `_USER_FILE_PREFIX`, `_COMPILED_SUFFIXES`, vérifie la forme AST du helper et les empreintes AST des fonctions d'écriture/sélection concernées ; il lit aussi les noms/hashes des vrais fichiers du template et vérifie l'AST du chemin arduino-cli. **Aucun import ni exécution de ces services.** Les empreintes AST décrivent le comportement de la base inspectée ; toute dérive non reconnue (ou différence de représentation AST de Python) devient `template_policy_unknown`/contrôle indisponible, à revoir explicitement.
+
+Le rapport signale les collisions après aplatissement et renommage `user_…`, les fichiers de configuration/support appartenant au template en ESP-IDF pur, le sketch principal réellement choisi (chemin/index dans le rapport) et plusieurs `.ino` sans `sketch.ino` explicite. Le fichier C/C++ utilisé comme entrée de secours ESP32 n'est pas compté deux fois parmi les helpers ; hors ESP32, l'absence de `.ino` est signalée comme risque de sketch vide, sans inventer un sketch utilisateur compilé. Aucune compilation, installation ou analyse sémantique C/C++ n'est effectuée.
+
+Sans inventaire injecté, toute disponibilité de dépendance reste inconnue. `LibraryInventory(root, entries, complete=False)` prend une table locale `{nom:{path:relatif,sha256:attendu}}` et vérifie **à chaque check** des fichiers preuves, via parents/`O_NOFOLLOW`, fichier régulier sans hardlink, ≤1 MiB par preuve, ≤128 entrées. Le rapport conserve leur hash et le hash de l'inventaire. Une preuve altérée ou symbolique invalide la vérification et rend la disponibilité inconnue. Une entrée présente signifie seulement « manifeste prouvé », pas compatibilité ou build réussi ; une entrée manquante est `dependency_absent` uniquement si l'appelant a déclaré l'inventaire **complet** et que ses preuves ont été vérifiées. La complétude reste une hypothèse de confiance de l'injection, pas un scan automatique de toutes les installations du système.
+
+Le résultat distingue `structure_status:valid|invalid` et `status:invalid|partial`. Même structurellement valide, il reste **partial** : `electrical_validation`, `functional_simulation`, `compiler_execution` sont toujours indisponibles. `checks_performed`/`checks_unavailable` détaillent cette portée. Les diagnostics sont `{code,path,severity,message}` avec JSON Pointer RFC6901, sévérités `error|warning|unknown|info` ; présence d'erreurs structurelles → invalid. Les messages restent concis et n'incluent aucun corps source.
+
+Le résumé retourne au plus 20 diagnostics (moins si l'échappement JSON l'exige), les comptes et `issues_truncated`. Les chemins du résumé sont bornés à 512 caractères et marqués `path_truncated` si nécessaire ; **les chemins complets et tous les diagnostics restent dans l'artefact**, sans suppression silencieuse. Réponse ≤24 KiB ; limite complète 4096 diagnostics/2 MiB, dépassée → `quota_exceeded` sans faux rapport complet. Un défaut d'intégrité du snapshot échoue avant le contrôle, sans faux diagnostic de circuit.
+
+Extension locale minimale du store : `projects/<id>/reports/<report_sha>.json` et `<report_sha>.meta.json`, index opaque existant avec `kind:check_report`, lié au projet et à la version contrôlée. Hash propre au rapport (distinct du hash projet), métadonnées/croisement/quota et publication atomique par les mêmes primitives ; répétition avec mêmes sources/catalogue/inventaire → même artefact immuable. `read_artifact` accepte désormais ces rapports JSON **et** les anciens `.vlx`, avec les mêmes tranches UTF-8/base64, hashes et limites. Aucun rapport de build, route de téléchargement, TTL, purge ou transport n'est ajouté.
+
+Tests 3b : ESP32/e-paper valide structurellement/partial, pins invalides/inconnues, IDs/attrs/panelKind, rôles GPIO/doublons, langue/support, noms et disponibilité des bibliothèques, preuve d'inventaire modifiée/symbolique, v1 exacte après v2 avec tête illisible, rapport complet relisible/hash/bornage/quotas/liens, collisions template/principal/multi-ino et politique changée → unknown. Test explicite accepté : changer `exportedAt` change la version. Régressions catalogue et store 3a conservées.
+
+**STOP au sous-jalon 3b après tests et diff ; attendre une nouvelle consigne.**

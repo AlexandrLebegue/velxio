@@ -471,11 +471,17 @@ class ProjectStore:
                 self._id(meta["project_id"], "p")
                 if not isinstance(meta["version"], str) or not VERSION.fullmatch(meta["version"]) or meta["artifact_id"] != artifact_id:
                     fail("integrity_error", "Invalid artifact mapping")
-                with self._directory(root, "projects") as projects, self._directory(projects, meta["project_id"]) as project, self._directory(project, "versions") as versions:
-                    if json.loads(self._read(versions, meta["version"] + ".json", 4096)) != meta:
+                kind = meta.get("kind", "project")
+                if kind not in ("project", "check_report"):
+                    fail("integrity_error", "Unsupported artifact kind")
+                digest = meta["version"] if kind == "project" else meta.get("report_hash")
+                if not isinstance(digest, str) or not VERSION.fullmatch(digest):
+                    fail("integrity_error", "Invalid artifact digest")
+                with self._directory(root, "projects") as projects, self._directory(projects, meta["project_id"]) as project, self._directory(project, "versions" if kind == "project" else "reports") as versions:
+                    if json.loads(self._read(versions, digest + (".json" if kind == "project" else ".meta.json"), 4096)) != meta:
                         fail("integrity_error", "Artifact does not belong to this project version")
-                    raw = self._read(versions, meta["version"] + ".vlx")
-                if hashlib.sha256(raw).hexdigest() != meta["sha256"] or meta["sha256"] != meta["version"] or len(raw) != meta["size_bytes"]:
+                    raw = self._read(versions, digest + (".vlx" if kind == "project" else ".json"))
+                if hashlib.sha256(raw).hexdigest() != meta["sha256"] or meta["sha256"] != digest or len(raw) != meta["size_bytes"]:
                     fail("integrity_error", "Artifact size/hash mismatch")
                 if offset > len(raw):
                     fail("invalid_argument", "Offset exceeds artifact size")
@@ -501,3 +507,55 @@ class ProjectStore:
                     result.update(data=raw[offset:end].decode("utf-8"), next_offset=end, eof=False, truncated=True)
                 return result
         return self._response(run)
+
+    def _load_version(self, root, project_id, version):
+        """Exact immutable snapshot only; deliberately never reads head.json."""
+        self._id(project_id, "p")
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            fail("invalid_argument", "An exact version hash is required")
+        with self._directory(root, "projects") as projects, self._directory(projects, project_id) as project, self._directory(project, "versions") as versions:
+            raw = self._read(versions, version + ".vlx")
+            meta = json.loads(self._read(versions, version + ".json", 4096))
+        self._id(meta["artifact_id"], "a")
+        if meta != {"artifact_id": meta["artifact_id"], "project_id": project_id, "version": version, "sha256": version, "size_bytes": len(raw)} or hashlib.sha256(raw).hexdigest() != version:
+            fail("integrity_error", "Snapshot manifest/hash mismatch")
+        with self._directory(root, "artifacts") as artifacts:
+            if json.loads(self._read(artifacts, meta["artifact_id"] + ".json", 4096)) != meta:
+                fail("integrity_error", "Snapshot artifact mapping differs")
+        return json.loads(raw)
+
+    def _store_report(self, project_id, version, report):
+        raw = canonical(report)
+        if len(raw) > MAX_PROJECT_BYTES:
+            fail("quota_exceeded", "Complete check report exceeds 2 MiB; nothing was truncated")
+        digest = hashlib.sha256(raw).hexdigest()
+        with self._locked(True) as root:
+            self._load_version(root, project_id, version)
+            with self._directory(root, "projects") as projects, self._directory(projects, project_id) as project, self._directory(project, "reports", True) as reports, self._directory(root, "artifacts") as artifacts:
+                try:
+                    existing = self._read(reports, digest + ".json")
+                except FileNotFoundError:
+                    existing = None
+                if existing is not None and existing != raw:
+                    fail("integrity_error", "Report hash collision")
+                try:
+                    meta = json.loads(self._read(reports, digest + ".meta.json", 4096))
+                except FileNotFoundError:
+                    meta = {"kind": "check_report", "artifact_id": "a_" + uuid.uuid4().hex, "project_id": project_id,
+                            "version": version, "report_hash": digest, "sha256": digest, "size_bytes": len(raw)}
+                self._id(meta["artifact_id"], "a")
+                if meta != {"kind": "check_report", "artifact_id": meta["artifact_id"], "project_id": project_id,
+                            "version": version, "report_hash": digest, "sha256": digest, "size_bytes": len(raw)}:
+                    fail("integrity_error", "Report manifest differs")
+                metadata = canonical(meta)
+                index_exists = False
+                try:
+                    index_exists = self._read(artifacts, meta["artifact_id"] + ".json", 4096) == metadata
+                except FileNotFoundError:
+                    pass
+                if self._usage(root) + (len(raw) if existing is None else 0) + (0 if index_exists else 2 * len(metadata)) > self.max_storage_bytes:
+                    fail("quota_exceeded", "Storage quota reached; existing files retained")
+                self._publish(reports, digest + ".json", raw)
+                self._publish(reports, digest + ".meta.json", metadata)
+                self._publish(artifacts, meta["artifact_id"] + ".json", metadata)
+        return meta

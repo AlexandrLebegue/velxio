@@ -1,4 +1,4 @@
-"""Six independent contracts; check_project/build_project have no handlers."""
+"""Six independent contracts; build_project has no handler."""
 
 from copy import deepcopy
 
@@ -86,10 +86,17 @@ _RESULTS = {
         "download_url": {"type": ["string", "null"], "maxLength": 2048}},
         ["project_id", "version", "content_sha256", "project_artifact_id", "summary", "download_url"]),
     "check_project": obj({"status": enum("valid", "invalid", "partial"),
+        "structure_status": enum("valid", "invalid"), "project_id": identifier, "version": version,
+        "catalog_revision": version, "diagnostic_artifact_sha256": version,
+        "issues": {"type": "array", "maxItems": 20, "items": obj({
+            "code": string(100), "path": {"type": "string", "maxLength": 512},
+            "severity": enum("error", "warning", "unknown", "info"), "message": string(240),
+            "path_truncated": {"type": "boolean"}}, ["code", "path", "severity", "message"])},
+        "issue_count": {"type": "integer", "minimum": 0, "maximum": 4096}, "issues_truncated": {"type": "boolean"},
         "checks_performed": {"type": "array", "items": string(100)},
         "checks_unavailable": {"type": "array", "items": string(100)},
         "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}},
-        ["status", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
+        ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
     "build_project": obj({"build_id": identifier, "state": enum("pending", "running", "done", "error", "interrupted"),
         "success": {"type": ["boolean", "null"]}, "error_kind": {"type": ["string", "null"]},
         "artifacts": {"type": "array", "maxItems": 20, "items": artifact},
@@ -111,5 +118,5 @@ def output_schema(name):
 
 TOOL_SCHEMAS = {name: {"name": name, "inputSchema": deepcopy(schema),
                        "outputSchema": output_schema(name),
-                       "implemented": name in ("search_catalog", "get_reference", "save_project", "read_artifact")}
+                       "implemented": name != "build_project"}
                 for name, schema in _INPUTS.items()}
