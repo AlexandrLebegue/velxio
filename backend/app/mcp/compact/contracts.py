@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 MAX_RESPONSE_BYTES = 24 * 1024
+MAX_SEARCH_OFFSET = 1_000_000
 MAX_PROJECT_BYTES = 2 * 1024 * 1024
 
 
@@ -61,8 +62,8 @@ build = obj({"action": enum("start", "status"), "project_id": identifier, "versi
 _INPUTS = {
     "search_catalog": obj({"query": {"type": "string", "maxLength": 256, "default": ""},
         "kind": {**enum("all", "component", "board", "example"), "default": "all"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-        "cursor": string(1024)}),
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
+        "offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}}),
     "get_reference": obj({"id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview"}}, ["id"]),
     "save_project": save,
     "check_project": obj({"project_id": identifier, "version": version}, ["project_id", "version"]),
@@ -76,10 +77,11 @@ _INPUTS = {
 _ERROR = obj({"ok": {"const": False}, "error": obj({"code": string(80), "message": string(500)}, ["code", "message"])}, ["ok", "error"])
 artifact = obj({"id": identifier, "kind": string(80), "size_bytes": {"type": "integer", "minimum": 0}, "sha256": version}, ["id", "kind", "size_bytes", "sha256"])
 _RESULTS = {
-    "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 20, "items": obj({
+    "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 50, "items": obj({
         "id": identifier, "kind": enum("component", "board", "example"), "name": string(500),
         "summary": {"type": "string", "maxLength": 300}}, ["id", "kind", "name", "summary"])},
-        "next_cursor": {"type": ["string", "null"], "maxLength": 1024}}, ["revision", "items", "next_cursor"]),
+        "total": {"type": "integer", "minimum": 0}, "has_more": {"type": "boolean"}},
+        ["revision", "items", "total", "has_more"]),
     "get_reference": obj({"id": identifier, "revision": version, "section": _INPUTS["get_reference"]["properties"]["section"],
                           "data": {}}, ["id", "revision", "section", "data"]),
     "save_project": obj({"project_id": identifier, "version": version, "content_sha256": version,

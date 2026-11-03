@@ -10,12 +10,12 @@ import sys
 import tempfile
 import unittest
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock, Mock
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'backend'))
 from app.mcp.compact import Catalog, CatalogError, TOOL_SCHEMAS, ProjectStore, ProjectChecker, BuildService
-from app.mcp.compact.facade import CompactRuntime, NamespaceStore
+from app.mcp.compact.facade import CompactRuntime, NamespaceStore, create_facade
 from app.mcp.compact.builds import proof_bytes
 from app.mcp.compact.checks import CompilerPolicy, LibraryInventory
 
@@ -38,6 +38,64 @@ class FacadeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await runtime.call('run_project', {}))['error']['code'], 'invalid_argument')
         self.assertEqual((await runtime.call('save_project', {}))['error']['code'], 'owner_integration_required')
         await runtime.close()
+
+    async def test_runtime_ignores_legacy_cursor_and_keeps_other_arguments_strict(self):
+        runtime = CompactRuntime(object())
+        args = {'cursor': {'stale': True}, 'offset': 5, 'limit': 50}
+        result = await runtime.call('search_catalog', args)
+        self.assertEqual(result, runtime.catalog.search_catalog(offset=5, limit=50))
+        self.assertIn('cursor', args)  # Caller-owned arguments are not mutated.
+        ref = await runtime.call('get_reference', {'id':'component:led', 'cursor':'stale'})
+        self.assertTrue(ref['ok'])
+        bad = await runtime.call('search_catalog', {'cursor':'stale', 'unexpected':1})
+        self.assertEqual(bad['error']['code'], 'invalid_argument')
+        await runtime.close()
+
+    async def test_sdk_registration_normalizes_before_strict_validation_controlled_doubles(self):
+        # Registration/ordering unit test with explicit SDK/validator doubles.
+        # Real JSON schemas are checked with Ajv; installed-SDK ASGI test below.
+        class FakeSDK:
+            def __init__(self, *args, **kwargs):
+                self._mcp_server = self
+            def list_tools(self):
+                return lambda callback: callback
+            def call_tool(self, *, validate_input):
+                self.validate_input = validate_input
+                def register(callback):
+                    self.callback = callback
+                    return callback
+                return register
+            def streamable_http_app(self):
+                return None
+        class ValidationError(Exception):
+            pass
+        sdk = FakeSDK()
+        validate = Mock()
+        runtime = SimpleNamespace(call=AsyncMock(return_value={'ok':True}))
+        modules = {}
+        for name in ('mcp.server.fastmcp', 'mcp.types', 'jsonschema'):
+            modules[name] = ModuleType(name)
+        modules['mcp.server.fastmcp'].FastMCP = lambda *a, **kw: sdk
+        modules['mcp.types'].Tool = SimpleNamespace
+        modules['mcp.types'].TextContent = SimpleNamespace
+        modules['jsonschema'].validate = validate
+        modules['jsonschema'].ValidationError = ValidationError
+        with patch.dict(sys.modules, modules), patch('app.mcp.compact.facade.CompactRuntime', return_value=runtime):
+            create_facade(object())
+        self.assertFalse(sdk.validate_input)
+        for name in TOOL_SCHEMAS:
+            runtime.call.reset_mock(); validate.reset_mock()
+            args = {'cursor':'stale'}
+            response = await sdk.callback(name, args)
+            validate.assert_called_once_with(instance={}, schema=TOOL_SCHEMAS[name]['inputSchema'])
+            runtime.call.assert_awaited_once_with(name, {})
+            self.assertEqual(json.loads(response[0].text), {'ok':True})
+            self.assertEqual(args, {'cursor':'stale'})
+        runtime.call.reset_mock()
+        validate.side_effect = ValidationError('CONTROLLED INVALID ARGUMENT FIXTURE')
+        response = await sdk.callback('search_catalog', {'cursor':'stale','other':1})
+        self.assertEqual(json.loads(response[0].text)['error']['code'], 'invalid_argument')
+        runtime.call.assert_not_called()
 
     async def test_snapshot_hash_tamper_refused(self):
         source = ROOT / 'backend/app/mcp/compact/catalog.snapshot.json'
@@ -236,3 +294,13 @@ class ActualSDKASGITests(unittest.IsolatedAsyncioTestCase):
                 payload = json.loads(result.json()['result']['content'][0]['text'])
                 self.assertEqual(len(payload['items']), 5)
                 self.assertLessEqual(len(result.content), 24*1024+2048)
+                result = await client.post('/mcp', headers=headers, json={'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'search_catalog','arguments':{'cursor':{'stale':True},'offset':5,'limit':50}}})
+                payload = json.loads(result.json()['result']['content'][0]['text'])
+                self.assertTrue(payload['ok'], payload)
+                self.assertEqual(len(payload['items']), 50)
+                self.assertEqual(payload['total'], 524)
+                self.assertTrue(payload['has_more'])
+                self.assertNotIn('next_cursor', payload)
+                result = await client.post('/mcp', headers=headers, json={'jsonrpc':'2.0','id':5,'method':'tools/call','params':{'name':'search_catalog','arguments':{'cursor':'stale','other':1}}})
+                payload = json.loads(result.json()['result']['content'][0]['text'])
+                self.assertEqual(payload['error']['code'], 'invalid_argument')

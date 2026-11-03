@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import copy
 import hashlib
 import json
 from pathlib import Path
 import subprocess
 
-from .contracts import MAX_RESPONSE_BYTES
+from .contracts import MAX_RESPONSE_BYTES, MAX_SEARCH_OFFSET
 
 
 class CatalogError(ValueError):
@@ -76,50 +75,34 @@ class Catalog:
             return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500]}}
 
     def search_catalog(self, **arguments):
+        # Legacy model-generated cursors are ignored, never decoded or reused.
+        arguments.pop("cursor", None)
         def run():
-            if set(arguments) - {"query", "kind", "limit", "cursor"}:
+            if set(arguments) - {"query", "kind", "limit", "offset"}:
                 raise CatalogError("invalid_argument", "Unknown search argument")
             query, kind, limit = arguments.get("query", ""), arguments.get("kind", "all"), arguments.get("limit", 5)
+            offset = arguments.get("offset", 0)
             if not isinstance(query, str) or len(query) > 256 or kind not in ("all", "board", "component", "example"):
                 raise CatalogError("invalid_argument", "Invalid query or kind")
             try:
                 query.encode("utf-8")
             except UnicodeError:
                 raise CatalogError("invalid_argument", "Query must be valid UTF-8 text")
-            if type(limit) is not int or not 1 <= limit <= 20:
-                raise CatalogError("invalid_argument", "limit must be an integer in 1..20")
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise CatalogError("invalid_argument", "limit must be an integer in 1..50")
+            if type(offset) is not int or not 0 <= offset <= MAX_SEARCH_OFFSET:
+                raise CatalogError("invalid_argument", f"offset must be an integer in 0..{MAX_SEARCH_OFFSET}")
             normalized = " ".join(query.casefold().split())
-            identity = {"revision": self.revision, "query": hashlib.sha256(normalized.encode("utf-8")).hexdigest(), "kind": kind}
-            offset = 0
-            if "cursor" in arguments:
-                cursor = arguments["cursor"]
-                if not isinstance(cursor, str) or not 1 <= len(cursor) <= 1024:
-                    raise CatalogError("invalid_argument", "Invalid cursor")
-                try:
-                    data = json.loads(base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
-                    offset = data["offset"]
-                    expected = {**identity, "offset": offset}
-                    digest = hashlib.sha256(encoded(expected)).hexdigest()
-                    if data != {**expected, "checksum": digest} or type(offset) is not int or offset <= 0:
-                        raise ValueError()
-                except (ValueError, KeyError, TypeError):
-                    raise CatalogError("invalid_cursor", "Cursor does not match revision/query/kind or is malformed")
             matches = []
             for e in self._entries.values():
                 haystack = " ".join([e["id"], e["name"], e["summary"], *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]).casefold()
                 if (kind == "all" or e["kind"] == kind) and all(word in haystack for word in normalized.split()):
                     matches.append(e)
             matches.sort(key=lambda e: e["id"])
-            if offset > len(matches):
-                raise CatalogError("invalid_cursor", "Cursor offset is outside this result set")
             page = matches[offset:offset + limit]
-            next_cursor = None
-            if offset + len(page) < len(matches):
-                data = {**identity, "offset": offset + len(page)}
-                data["checksum"] = hashlib.sha256(encoded(data)).hexdigest()
-                next_cursor = base64.urlsafe_b64encode(encoded(data)).decode().rstrip("=")
             return {"ok": True, "revision": self.revision, "items": [
-                {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300]} for e in page], "next_cursor": next_cursor}
+                {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300]} for e in page],
+                "total": len(matches), "has_more": offset + len(page) < len(matches)}
         return self._guard(run)
 
     def get_reference(self, **arguments):

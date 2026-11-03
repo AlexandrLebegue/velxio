@@ -14,7 +14,7 @@ from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
 
 DESCRIPTIONS = {
-    'search_catalog': 'Search the real catalog; five results by default, revision-bound cursor.',
+    'search_catalog': 'Search the real catalog; five results by default, stateless offset pagination (limit up to 50).',
     'get_reference': 'Reference by id and optional section; code only with explicit code section.',
     'save_project': 'Save native snapshot or allowlisted changes with required CAS for updates.',
     'check_project': 'Structural checks of an exact version; no electrical or functional certification.',
@@ -23,6 +23,13 @@ DESCRIPTIONS = {
 }
 _SCOPE = ContextVar('compact_http_scope', default=None)
 BASE = Path(__file__).parent
+
+
+def _normalize_arguments(arguments):
+    # Tolerate this removed model-generated field without relaxing other keys.
+    if isinstance(arguments, dict):
+        return {key: value for key, value in arguments.items() if key != 'cursor'}
+    return arguments
 
 
 class NamespaceStore(ProjectStore):
@@ -68,6 +75,7 @@ class CompactRuntime:
                 ToolchainInventory(doc['toolchain_root'], doc['toolchains'], complete=doc['complete']))
 
     async def call(self, name, arguments):
+        arguments = _normalize_arguments(arguments)
         if name not in TOOL_SCHEMAS or not isinstance(arguments, dict):
             return {'ok': False, 'error': {'code': 'invalid_argument', 'message': 'Unknown tool or invalid arguments'}}
         if self.closing:
@@ -127,6 +135,7 @@ class RequestScope:
 def create_facade(app, **runtime_options):
     from mcp.server.fastmcp import FastMCP
     from mcp.types import Tool, TextContent
+    from jsonschema import validate, ValidationError
     mcp = FastMCP('velxio-compact', host='0.0.0.0', stateless_http=True, json_response=True, streamable_http_path='/mcp')
     runtime = CompactRuntime(app, **runtime_options)
 
@@ -135,10 +144,17 @@ def create_facade(app, **runtime_options):
         return [Tool(name=name, description=DESCRIPTIONS[name], inputSchema=schema['inputSchema'])
                 for name, schema in TOOL_SCHEMAS.items()]
 
-    @mcp._mcp_server.call_tool()
+    # Normalize before schema validation; the SDK would otherwise reject cursor.
+    @mcp._mcp_server.call_tool(validate_input=False)
     async def call_tool(name, arguments):
         try:
+            arguments = _normalize_arguments(arguments)
+            if name in TOOL_SCHEMAS:
+                validate(instance=arguments, schema=TOOL_SCHEMAS[name]['inputSchema'])
             result = bounded(await runtime.call(name, arguments))
+        except ValidationError:
+            result = {'ok': False, 'error': {'code': 'invalid_argument',
+                'message': 'Arguments do not match the tool input schema'}}
         except (OSError, ValueError, KeyError, TypeError) as exc:
             result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'preflight_unknown'),
                 'message': 'Local prerequisite unavailable or invalid; no installation attempted'}}

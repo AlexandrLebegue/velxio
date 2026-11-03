@@ -45,40 +45,64 @@ class CompactCatalogTests(unittest.TestCase):
     def test_default_five_and_pagination_no_loss_or_duplicates(self):
         page = self.catalog.search_catalog()
         self.assertEqual(len(page["items"]), 5)
+        self.assertEqual(page["total"], len(self.catalog._entries))
         ids = [x["id"] for x in page["items"]]
-        while page["next_cursor"]:
-            page = self.catalog.search_catalog(cursor=page["next_cursor"])
+        while page["has_more"]:
+            page = self.catalog.search_catalog(offset=len(ids))
+            self.assertEqual(page["total"], len(self.catalog._entries))
             ids.extend(x["id"] for x in page["items"])
         self.assertEqual(ids, sorted(self.catalog._entries))
+        self.assertNotIn("next_cursor", page)
 
-    def test_cursor_bound_to_query_kind_revision_and_integrity(self):
-        cursor = self.catalog.search_catalog()["next_cursor"]
-        for args in ({"query": "epaper"}, {"kind": "example"}):
-            self.assertEqual(self.catalog.search_catalog(cursor=cursor, **args)["error"]["code"], "invalid_cursor")
-        changed = copy.deepcopy(self.catalog._snapshot)
-        changed["revision"] = "0" * 64
-        self.assertEqual(Catalog(changed).search_catalog(cursor=cursor)["error"]["code"], "invalid_cursor")
-        for bad in ("!", cursor[:-8], "bnVsbA", "W10", "e30"):
-            self.assertFalse(self.catalog.search_catalog(cursor=bad)["ok"])
+    def test_offset_boundaries_maximum_limit_and_filtered_totals(self):
+        first = self.catalog.search_catalog(kind="example", limit=50)
+        self.assertEqual(len(first["items"]), 50)
+        self.assertEqual(first["total"], 328)
+        last = self.catalog.search_catalog(kind="example", offset=325, limit=50)
+        self.assertEqual(len(last["items"]), 3)
+        self.assertFalse(last["has_more"])
+        for offset in (328, 329, 1_000_000):
+            page = self.catalog.search_catalog(kind="example", offset=offset)
+            self.assertEqual(page["items"], [])
+            self.assertEqual(page["total"], 328)
+            self.assertFalse(page["has_more"])
+        empty = self.catalog.search_catalog(query="nonexistentcatalogentry")
+        self.assertEqual((empty["total"], empty["has_more"], empty["items"]), (0, False, []))
 
-    def test_cursor_normalizes_query_and_allows_page_size_change(self):
-        page = self.catalog.search_catalog(query="  ESP32 ", kind="example", limit=1)
-        self.assertTrue(self.catalog.search_catalog(query="esp32", kind="example", limit=3, cursor=page["next_cursor"])["ok"])
+    def test_offset_normalizes_query_and_allows_page_size_change(self):
+        first = self.catalog.search_catalog(query="  ESP32 ", kind="example", limit=1)
+        rest = self.catalog.search_catalog(query="esp32", kind="example", limit=3, offset=1)
+        together = self.catalog.search_catalog(query="esp32", kind="example", limit=4)
+        self.assertEqual(first["items"] + rest["items"], together["items"])
+        self.assertEqual(first["total"], rest["total"])
 
-    def test_multibyte_query_keeps_its_cursor_within_quota(self):
+    def test_multibyte_search_stays_bounded_and_large_page_refuses_cleanly(self):
         snapshot = copy.deepcopy(self.catalog._snapshot)
         query = "🧪" * 256
         for entry in snapshot["entries"]:
             entry["summary"] = query
         catalog = Catalog(snapshot)
-        page = catalog.search_catalog(query=query)
-        self.assertLessEqual(len(page["next_cursor"]), 1024)
-        self.assertTrue(catalog.search_catalog(query=query, cursor=page["next_cursor"])["ok"])
+        for offset in (0, 5):
+            page = catalog.search_catalog(query=query, offset=offset)
+            self.assertTrue(page["ok"])
+            self.assertLessEqual(len(encoded(page)), MAX_RESPONSE_BYTES)
+        self.assertEqual(catalog.search_catalog(query=query, limit=50)["error"]["code"], "quota_exceeded")
+
+    def test_legacy_cursor_ignored_without_changing_offset_or_query(self):
+        expected = self.catalog.search_catalog(query="esp32", kind="example", limit=3, offset=5)
+        for cursor in (None, "!", "stale-from-another-revision", "x" * 10000, 17, True, [], {}):
+            with self.subTest(cursor=type(cursor).__name__):
+                result = self.catalog.search_catalog(query="esp32", kind="example", limit=3, offset=5, cursor=cursor)
+                self.assertEqual(result, expected)
+                self.assertFalse(set(result) & {"cursor", "next_cursor"})
+        self.assertEqual(self.catalog.search_catalog(cursor="stale"), self.catalog.search_catalog())
+        self.assertFalse(self.catalog.search_catalog(cursor="stale", other=1)["ok"])
 
     def test_invalid_search_arguments(self):
-        for args in ({"limit": True}, {"limit": 0}, {"limit": 21}, {"limit": 1.5},
+        for args in ({"limit": True}, {"limit": 0}, {"limit": 51}, {"limit": 1.5},
                      {"query": None}, {"query": "x" * 257}, {"query": "\ud800"}, {"kind": "alligator"},
-                     {"cursor": None}, {"cursor": "x" * 1025}, {"ref": "led"}):
+                     {"offset": None}, {"offset": True}, {"offset": -1}, {"offset": 1.5},
+                     {"offset": "5"}, {"offset": 1_000_001}, {"ref": "led"}):
             with self.subTest(args=args):
                 self.assertFalse(self.catalog.search_catalog(**args)["ok"])
 
@@ -163,6 +187,17 @@ class CompactCatalogTests(unittest.TestCase):
                 self.assertFalse(schema['additionalProperties'])
                 self.assertFalse(set(schema) & {'oneOf', 'anyOf', 'allOf'})
 
+    def test_search_schema_has_no_cursors_and_documents_offset_limits(self):
+        for tool in TOOL_SCHEMAS.values():
+            self.assertNotIn('cursor', tool['inputSchema']['properties'])
+        spec = TOOL_SCHEMAS['search_catalog']
+        props = spec['inputSchema']['properties']
+        self.assertEqual(props['limit'], {'type':'integer','minimum':1,'maximum':50,'default':5})
+        self.assertEqual(props['offset'], {'type':'integer','minimum':0,'maximum':1_000_000,'default':0})
+        success = spec['outputSchema']['oneOf'][0]
+        self.assertFalse(set(success['properties']) & {'cursor','next_cursor'})
+        self.assertTrue({'total','has_more'} <= set(success['required']))
+
     def test_flat_build_schema_preserves_action_and_field_constraints(self):
         schema = TOOL_SCHEMAS['build_project']['inputSchema']
         self.assertEqual(schema['required'], ['action'])
@@ -199,6 +234,9 @@ class CompactCatalogTests(unittest.TestCase):
         doc = {"format": "velxio-project", "version": 1, "boards": [], "fileGroups": {}, "components": [], "wires": [], "activeBoardId": None}
         cases = [
             ("search_catalog", {}, True), ("search_catalog", {"limit": True}, False),
+            ("search_catalog", {"limit": 50, "offset": 1_000_000}, True),
+            ("search_catalog", {"offset": True}, False), ("search_catalog", {"offset": -1}, False),
+            ("search_catalog", {"offset": 1_000_001}, False), ("search_catalog", {"other": 1}, False),
             ("get_reference", {"id": "component:led"}, True), ("get_reference", {"ref": "led"}, False),
             ("save_project", {"document": doc}, True),
             ("save_project", {"document": doc, "project_id": "p", "expected_version": version}, True),
