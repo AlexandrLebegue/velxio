@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -92,11 +93,15 @@ class Catalog:
                 raise CatalogError("invalid_argument", "limit must be an integer in 1..50")
             if type(offset) is not int or not 0 <= offset <= MAX_SEARCH_OFFSET:
                 raise CatalogError("invalid_argument", f"offset must be an integer in 0..{MAX_SEARCH_OFFSET}")
-            normalized = " ".join(query.casefold().split())
+            # Ignore separators within each indexed field: e-paper == e_paper
+            # == e paper == epaper. Do not concatenate unrelated fields.
+            def normalize(value):
+                return re.sub(r"[-_\s]+", "", value.casefold())
+            normalized = normalize(query)
             matches = []
             for e in self._entries.values():
-                haystack = " ".join([e["id"], e["name"], e["summary"], *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]).casefold()
-                if (kind == "all" or e["kind"] == kind) and all(word in haystack for word in normalized.split()):
+                fields = [e["id"], e["name"], e["summary"], *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]
+                if (kind == "all" or e["kind"] == kind) and any(normalized in normalize(field) for field in fields):
                     matches.append(e)
             matches.sort(key=lambda e: e["id"])
             page = matches[offset:offset + limit]
@@ -152,13 +157,28 @@ class Catalog:
                 overview["dependencies"] = project.get("libraries", "unknown")
             values = {**overview, "overview": overview, "libraries": libraries or "unknown",
                       "files": [{k: v for k, v in f.items() if k != "content"} for f in files],
-                      "project": self._without_code(project) if project else "unknown",
+                      "project": self._native_fragment(e) if e["kind"] != "example" else self._without_code(project),
                       "code": {"files": files, "raw_inputs": [
                           raw for raw in self._snapshot.get("raw_inputs", [])
                           if raw["decoded_sha256"] in {f["sha256"] for f in files}
                       ]} if project else "unknown"}
             return {"ok": True, "id": e["id"], "revision": self.revision, "section": section, "data": values[section]}
         return self._guard(run)
+
+    @staticmethod
+    def _native_fragment(entry):
+        # Deliberately limited bridge. Unknown shapes must never be guessed.
+        if entry["id"] == "board:esp32":
+            return {"format": "velxio-project", "version": 1,
+                    "boards": [{"id": "esp", "boardKind": entry["key"], "x": 0, "y": 0,
+                                "activeFileGroupId": "sketch", "languageMode": "arduino"}],
+                    "fileGroups": {"sketch": [{"name": "sketch.ino", "content": ""}]},
+                    "components": [], "wires": [], "activeBoardId": "esp"}
+        if entry["id"] == "component:epaper-1in54-bw":
+            return {"components": [{"id": "epd", "metadataId": entry["key"], "x": 300, "y": 0,
+                                    "properties": copy.deepcopy(entry["defaults"])}],
+                    "pinNames": [pin["name"] for pin in entry["pins"]]}
+        return "unknown"
 
     @staticmethod
     def _uses(project, entry):

@@ -1,4 +1,4 @@
-# Contrats et catalogue compact — jalon 2
+# Contrats et catalogue compact — jalon 2k
 
 Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `BuildService.build_project` ajoute au 3c l'orchestration persistante injectable ; **son intégration réelle au propriétaire REST est bloquée**, sans compilateur réel par défaut. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema. Aucun `test_project`.
 
@@ -18,7 +18,7 @@ PY
 python3 -m unittest discover -s test/backend/unit -p test_mcp_compact_catalog.py -v
 ```
 
-Le runtime Python n'utilise que la bibliothèque standard. La génération requiert Node et les paquets Babel **déjà présents** (`@babel/parser`, `@babel/traverse`, `@babel/core`, `@babel/plugin-transform-typescript`). Les tests de schémas utilisent Ajv déjà présent. Ni `npm`, ni téléchargement, ni installation automatique. Une dépendance absente produit un échec explicite. La génération écrit sur stdout ; `from_repository` capture l'instantané en mémoire, sans écrire de stockage projet ou de fichier généré dans le dépôt. L'instantané dérivé (~2,3 Mo) n'est pas commité : les sources versionnées et le générateur sont son autorité.
+Le runtime Python n'utilise que la bibliothèque standard. La génération requiert Node et les paquets Babel **déjà présents** (`@babel/parser`, `@babel/traverse`, `@babel/core`, `@babel/plugin-transform-typescript`). Les tests de schémas utilisent Ajv déjà présent. Ni `npm`, ni téléchargement, ni installation automatique. Une dépendance absente produit un échec explicite. La génération écrit sur stdout ; `from_repository` capture l'instantané en mémoire, sans écrire de stockage projet ou de fichier généré dans le dépôt. L'instantané dérivé est livré dans `catalog.snapshot.json`, avec son manifeste `.sha256`. Les sources versionnées et le générateur restent son autorité ; il n'est régénéré que si leurs données changent. Le jalon 2k utilise les tags, résumés et valeurs par défaut déjà présents et ne nécessite aucune régénération.
 
 ## Extraction reproductible et limites
 
@@ -38,8 +38,8 @@ Les bibliothèques sont **déclarées par les exemples**, avec leur provenance (
 
 ## Contrats et réponses bornées
 
-- `search_catalog(query="",kind="all",limit=5,offset=0)` : recherche de tous les mots normalisés dans noms, IDs, tags, aliases, descriptions et mots-clés réels ; ordre stable par ID. Ce classement simple ne prétend pas reproduire les poids/synonymes multilingues de l'UI. De 1 à 50 résultats ; aucun code/SVG dans les résultats. Pagination sans état : `offset` entier de 0 à 1 000 000, `total` indique le nombre de résultats de la recherche, `has_more` indique s'il reste des résultats après cette page. Pour avancer, ajouter le nombre d'éléments reçus à l'offset ; au-delà de `total`, la page est vide et `has_more:false`. La réponse conserve `revision` ; le client peut recommencer à zéro si elle change entre deux pages. Aucun curseur n'est exposé ni produit. Un ancien argument `cursor` est ignoré, quelle que soit sa valeur, avant validation des arguments MCP. La taille de page peut changer.
-- `get_reference(id,section="overview")` : ID canonique `component:…`, `board:…` ou `example:…`. Les clés/aliases non ambigus sont acceptés ; une collision exige un ID qualifié. Sections : `overview,pins,attrs,protocol,libraries,init,limitations,sources,files,project,code`. Par défaut : résumé, broches/attributs/protocole, libs sourcées, init/limites/sources ; pour un exemple, noms, tailles/hashes des fichiers et dépendances. Ni corps de source, ni VFS, ni sourceC ou blobs embarqués par défaut. `files` est un manifeste ; `project` est débarrassé des contenus source ; **seul `code` restitue les sources d'origine**, y compris celles des groupes et chips.
+- `search_catalog(query="",kind="all",limit=5,offset=0)` : recherche de la requête normalisée dans chaque nom, ID, tag, alias, résumé et mot-clé réel (minuscules, tirets/espaces/underscores ignorés) ; ordre stable par ID. Ce classement simple ne prétend pas reproduire les poids/synonymes multilingues de l'UI. De 1 à 50 résultats ; aucun code/SVG dans les résultats. Pagination sans état : `offset` entier de 0 à 1 000 000, `total` indique le nombre de résultats de la recherche, `has_more` indique s'il reste des résultats après cette page. Pour avancer, ajouter le nombre d'éléments reçus à l'offset ; au-delà de `total`, la page est vide et `has_more:false`. La réponse conserve `revision` ; le client peut recommencer à zéro si elle change entre deux pages. Aucun curseur n'est exposé ni produit. Un ancien argument `cursor` est ignoré, quelle que soit sa valeur, avant validation des arguments MCP. La taille de page peut changer.
+- `get_reference(id,section="overview")` : ID canonique `component:…`, `board:…` ou `example:…`. Les clés/aliases non ambigus sont acceptés ; une collision exige un ID qualifié. Sections : `overview,pins,attrs,protocol,libraries,init,limitations,sources,files,project,code`. Par défaut : résumé, broches/attributs/protocole, libs sourcées, init/limites/sources ; pour un exemple, noms, tailles/hashes des fichiers et dépendances. Ni corps de source, ni VFS, ni sourceC ou blobs embarqués par défaut. `files` est un manifeste ; pour un exemple, `project` est débarrassé des contenus source et **seul `code` restitue les sources d'origine**, y compris celles des groupes et chips. Pour `board:esp32`, `project` fournit un document natif minimal avec sketch vide ; pour `component:epaper-1in54-bw`, un fragment `components` et `pinNames` (voir jalon 2k ci-dessous). Les autres passerelles carte/composant restent `unknown`.
 - Chaque réponse sérialisée par le module est ≤**24 KiB UTF-8**. Un dépassement de section catalogue devient `quota_exceeded`, sans tronquer du code ni annoncer un faux artefact consultable. Au sous-jalon 3a, `read_artifact` lit uniquement les snapshots projet persistés, sans créer d'artefact catalogue. Query ≤256 caractères, ID ≤240 ; arguments inconnus et types invalides refusés, à l’exception de l’ancien `cursor` ignoré sur les six outils MCP. Les réponses restent des objets JSON ; le futur adaptateur MCP devra sérialiser sans ajouter une enveloppe illimitée.
 
 Contrats projet et état au sous-jalon 3a :
@@ -54,6 +54,53 @@ Contrats projet et état au sous-jalon 3a :
 Les modifications ciblées `changes` sont `set`/`remove` sur des JSON Pointers RFC 6901 sous `name,boards,fileGroups,folderGroups,components,wires,activeBoardId`. Pour `set`, `value` est obligatoire ; pour `remove`, il est interdit. L'applicateur 3a décode les échappements, refuse les chemins inexistants pour remove, permet l'ajout d'une clé d'objet par set, remplace uniquement un index existant d'un tableau (pas d'insertion implicite), puis valide le **document résultant** et publie un snapshot après CAS. Pas de changement de format/version par patch.
 
 Le schéma du document préserve les objets internes de l'UI, dont options/SPIFFS/SD. Le stockage 3a applique les validations structurelles et quotas décrits ci-dessous ; il ne fait aucune interprétation électrique. Le contrôle 3b reste structurel. Le build 3c est décrit ci-dessous : aucun vrai firmware n'a été compilé et aucun faux succès réel n'est annoncé.
+
+## Jalon 2k — écrire un projet avec un petit modèle local
+
+Les six outils restent inchangés. Avant de sauvegarder, appeler `get_reference(id="board:esp32",section="project")` : son champ `data` est directement le `document` de `save_project`, avec une carte `esp`, `boardKind:"esp32"`, `fileGroups.sketch` contenant `sketch.ino` vide et `activeBoardId:"esp"`. Les IDs qualifiés du catalogue ne sont pas les valeurs natives de `boardKind` ou `metadataId`.
+
+`get_reference(id="component:epaper-1in54-bw",section="project")` renvoie ce fragment :
+
+```json
+{"components":[{"id":"epd","metadataId":"epaper-1in54-bw","x":300,"y":0,"properties":{"panelKind":"epaper-1in54-bw","refreshMs":50}}],"pinNames":["GND","VCC","SCK","SDI","CS","DC","RST","BUSY"]}
+```
+
+Ajouter les objets de `components` au tableau du document. `pinNames` décrit les valeurs exactes à employer dans `wires[].start/end.pinName` ; ce n'est pas un champ du document. Les `componentId` des extrémités sont les IDs d'instances `esp` et `epd`. Si plusieurs instances sont ajoutées, leur donner des IDs uniques. Les passerelles des autres cartes/composants renvoient honnêtement `unknown`.
+
+Exemple local complet, sans compilation ni réseau :
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from app.mcp.compact import Catalog, ProjectStore, ProjectChecker
+
+catalog = Catalog.from_snapshot(Path("backend/app/mcp/compact/catalog.snapshot.json"))
+doc = catalog.get_reference(id="board:esp32", section="project")["data"]
+fragment = catalog.get_reference(id="component:epaper-1in54-bw", section="project")["data"]
+doc["components"].extend(fragment["components"])
+for gpio, pin in [("GND", "GND"), ("3V3", "VCC"), ("18", "SCK"), ("23", "SDI"),
+                  ("5", "CS"), ("17", "DC"), ("16", "RST"), ("4", "BUSY")]:
+    doc["wires"].append({"id": "w-" + pin,
+                         "start": {"componentId": "esp", "pinName": gpio},
+                         "end": {"componentId": "epd", "pinName": pin}})
+with TemporaryDirectory() as root:
+    store = ProjectStore(root)
+    saved = store.save_project(document=doc)
+    assert saved["ok"], saved
+    checked = ProjectChecker(store, catalog).check_project(
+        project_id=saved["project_id"], version=saved["version"])
+    assert checked["ok"] and checked["structure_status"] == "valid", checked
+```
+
+`check_project` reste `partial` lorsque les vérifications électriques, fonctionnelles ou de dépendances installées sont indisponibles. Le sketch vide sert de point de départ ; cet aller-retour ne prouve aucun affichage ni firmware compilé.
+
+Le schéma d'entrée décrit les objets requis : carte `id,boardKind,x,y,activeFileGroupId`, composant `id,metadataId,x,y,properties`, fil `id,start,end`, extrémité `componentId,pinName`. Il indique types, modes `arduino|micropython|espidf` et exemples JSON. La racine reste un objet sans `oneOf`/`anyOf`, et les extensions internes de l'UI sont conservées.
+
+Chaque erreur de validation de sauvegarde donne `error.code`, `path`, `received` et `expected`, ainsi qu'un message lisible. Par exemple, l'absence de métadonnées produit `path:"/components/0/metadataId"`, `received:"<missing>"`, `expected:"string of 1..200 characters without control characters"`. `received` est un aperçu JSON limité à 200 caractères, avec `...` en cas de troncature. Les chemins RFC 6901 du document sont relatifs au document (y compris après patch) ; ceux des arguments et opérations commencent par `/project_id`, `/expected_version`, `/changes/0/path`, etc. La chaîne vide désigne la racine. La façade MCP conserve ces détails même si le schéma d'entrée rejette l'appel avant le stockage.
+
+Les recherches `e-paper`/`epaper` et `e-ink`/`eink` trouvent l'écran et l'exemple `example:epaper-1in54-uno-hello`. Casse, espaces et underscores sont également ignorés. Avec cinq résultats par défaut, suivre `offset`/`has_more` pour parcourir tous les résultats, ou demander `limit:50`.
+
+Vérification complète : `python3 -m unittest discover -s test/backend/unit -p 'test_mcp_compact*.py' -q`. Les régressions 2k couvrent les erreurs avec chemin et aperçu borné, les schémas publiés, les fragments et leurs valeurs par défaut, l'aller-retour carte + écran + huit fils jusqu'au contrôle structurel, la façade et l'indexation tags/résumés avec normalisation.
 
 ## Sous-jalon 3a — snapshots natifs et lecture bornée
 

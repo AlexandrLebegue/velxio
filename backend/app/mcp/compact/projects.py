@@ -9,6 +9,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -28,213 +29,348 @@ def fail(code, message):
     raise CatalogError(code, message)
 
 
-def canonical(value):
-    def check(item):
+MISSING = object()
+
+
+def pointer(path, key):
+    token = str(key).encode('utf-8', 'backslashreplace').decode('utf-8')
+    return path + '/' + token.replace('~', '~0').replace('/', '~1')
+
+
+def validation_error(path, received, expected, code='invalid_argument'):
+    if received is MISSING:
+        preview = '<missing>'
+    else:
+        try:
+            # Stream the JSON preview, avoiding a full copy of large containers.
+            chunks = json.JSONEncoder(ensure_ascii=True, allow_nan=True).iterencode(received)
+            preview = ''
+            for chunk in chunks:
+                preview += chunk[:201]
+                if len(preview) > 200:
+                    break
+        except (ValueError, TypeError, RecursionError):
+            preview = repr(type(received))
+        if len(preview) > 200:
+            preview = preview[:197] + '...'
+    error = CatalogError(code, f'{path or "(root)"}: expected {expected}; received {preview}'[:500])
+    error.details = {'path': path, 'received': preview, 'expected': expected[:500]}
+    return error
+
+
+def invalid(path, received, expected, code='invalid_argument'):
+    raise validation_error(path, received, expected, code)
+
+
+def canonical(value, path=''):
+    def check(item, current):
         if isinstance(item, dict):
-            if any(not isinstance(key, str) for key in item):
-                fail("invalid_argument", "JSON object keys must be strings")
-            for child in item.values():
-                check(child)
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    invalid(current, key, 'JSON object keys must be strings')
+                try:
+                    key.encode('utf-8')
+                except UnicodeError:
+                    invalid(pointer(current, key), key, 'valid UTF-8 object key')
+                check(child, pointer(current, key))
         elif isinstance(item, list):
-            for child in item:
-                check(child)
+            for i, child in enumerate(item):
+                check(child, pointer(current, i))
         elif type(item) not in (str, int, float, bool, type(None)):
-            fail("invalid_argument", "Only native JSON values are accepted")
+            invalid(current, item, 'native JSON value')
+        elif type(item) is float and not math.isfinite(item):
+            invalid(current, item, 'finite JSON number')
+        elif isinstance(item, str):
+            try:
+                item.encode('utf-8')
+            except UnicodeError:
+                invalid(current, item, 'valid UTF-8 string')
     try:
-        check(value)
-        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    except (ValueError, TypeError, UnicodeError, RecursionError):
-        fail("invalid_argument", "Document must contain finite, UTF-8 JSON values")
+        check(value, path)
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        if isinstance(exc, CatalogError):
+            raise
+        invalid(path, value, 'finite UTF-8 JSON within recursion limits')
 
 
-def text(value, maximum=200):
-    if not isinstance(value, str) or not 1 <= len(value) <= maximum or re.search(r"[\x00-\x1f\x7f]", value):
-        fail("invalid_argument", "Invalid string field")
+def text(value, maximum=200, path=''):
+    if not isinstance(value, str) or not 1 <= len(value) <= maximum or re.search(r'[\x00-\x1f\x7f]', value):
+        invalid(path, value, f'string of 1..{maximum} characters without control characters')
+    try:
+        value.encode('utf-8')
+    except UnicodeError:
+        invalid(path, value, 'valid UTF-8 string')
 
 
-def filename(value):
-    text(value, 240)
-    if len(value.encode("utf-8")) > 240 or "\\" in value or value.startswith("/") or re.search(r'[:*?"<>|]', value):
-        fail("invalid_argument", "File names must be portable relative POSIX paths")
-    for part in value.split("/"):
-        if part in ("", ".", "..") or part.endswith((".", " ")) or re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part):
-            fail("invalid_argument", "Unsafe or ambiguous file path")
-    return unicodedata.normalize("NFC", value).casefold()
+def filename(value, path=''):
+    text(value, 240, path)
+    try:
+        size = len(value.encode('utf-8'))
+    except UnicodeError:
+        invalid(path, value, 'valid UTF-8 file path')
+    if size > 240 or '\\' in value or value.startswith('/') or re.search(r'[:*?"<>|]', value):
+        invalid(path, value, 'portable relative POSIX file path, at most 240 UTF-8 bytes')
+    for part in value.split('/'):
+        if part in ('', '.', '..') or part.endswith(('.', ' ')) or re.fullmatch(r'(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?', part):
+            invalid(path, value, 'relative file path without empty, traversal, reserved or ambiguous segments')
+    return unicodedata.normalize('NFC', value).casefold()
+
+
+def finite_number(value):
+    return type(value) is int or (type(value) is float and math.isfinite(value))
 
 
 def validate_document(doc):
     if not isinstance(doc, dict):
-        fail("invalid_argument", "document must be an object")
-    required = {"format", "version", "boards", "fileGroups", "components", "wires", "activeBoardId"}
-    if not required <= doc.keys() or doc.keys() - required - {"name", "exportedAt", "folderGroups"}:
-        fail("invalid_argument", "Missing or unknown document fields")
-    if doc["format"] != "velxio-project" or type(doc["version"]) is not int or doc["version"] != 1:
-        fail("invalid_argument", "Expected native velxio-project format version 1")
-    for key, maximum in (("name", 200), ("exportedAt", 80)):
+        invalid('', doc, 'native project object')
+    required = {'format': '"velxio-project"', 'version': 'integer 1',
+                'boards': 'array of native board objects', 'fileGroups': 'object mapping group IDs to file arrays',
+                'components': 'array of native component objects', 'wires': 'array of native wire objects',
+                'activeBoardId': 'existing board instance ID or null'}
+    for field in sorted(required.keys() - doc.keys()):
+        invalid(pointer('', field), MISSING, required[field])
+    for field in doc.keys() - required - {'name', 'exportedAt', 'folderGroups'}:
+        invalid(pointer('', field), doc[field], 'known native document field')
+    if doc['format'] != 'velxio-project':
+        invalid('/format', doc['format'], '"velxio-project"')
+    if type(doc['version']) is not int or doc['version'] != 1:
+        invalid('/version', doc['version'], 'integer 1')
+    for key, maximum in (('name', 200), ('exportedAt', 80)):
         if key in doc:
-            text(doc[key], maximum)
-    for key, maximum in (("boards", 8), ("components", 512), ("wires", 1024)):
+            text(doc[key], maximum, pointer('', key))
+    for key, maximum in (('boards', 8), ('components', 512), ('wires', 1024)):
         if not isinstance(doc[key], list):
-            fail("invalid_argument", key + " must be an array")
+            invalid(pointer('', key), doc[key], 'array')
         if len(doc[key]) > maximum:
-            fail("quota_exceeded", key + " count exceeds quota")
-    groups = doc["fileGroups"]
+            invalid(pointer('', key), doc[key], f'at most {maximum} items', 'quota_exceeded')
+    groups = doc['fileGroups']
     if not isinstance(groups, dict) or len(groups) > 128:
-        fail("invalid_argument", "Invalid fileGroups")
+        invalid('/fileGroups', groups, 'object with at most 128 file groups')
     count = total = 0
     basenames = {}
 
-    def file_set(items, binary=False, content_key="content"):
+    def file_set(items, path, binary=False, content_key='content', embedded=False):
         nonlocal count, total
         if not isinstance(items, list):
-            fail("invalid_argument", "File collection must be an array")
+            invalid(path, items, 'array of file objects')
         seen, bases = set(), set()
-        collision = False
-        for item in items:
-            if not isinstance(item, dict) or not {"name", content_key} <= item.keys():
-                fail("invalid_argument", "Invalid file entry")
-            normalized = filename(item["name"])
+        collision = None
+        for i, item in enumerate(items):
+            current = pointer(path, i)
+            if not isinstance(item, dict):
+                invalid(current, item, 'file object with name and ' + content_key)
+            for field in ('name', content_key):
+                if field not in item:
+                    expected = 'portable relative POSIX file path' if field == 'name' else ('base64 string' if binary else 'UTF-8 source string')
+                    invalid(pointer(current, field), MISSING, expected)
+            normalized = filename(item['name'], pointer(current, 'name'))
             if normalized in seen:
-                fail("invalid_argument", "File path collision after normalization/casefold")
-            if any(normalized.startswith(other + "/") or other.startswith(normalized + "/") for other in seen):
-                fail("invalid_argument", "File and directory paths collide")
+                invalid(pointer(current, 'name'), item['name'], 'unique file path after normalization/casefold')
+            if any(normalized.startswith(other + '/') or other.startswith(normalized + '/') for other in seen):
+                invalid(pointer(current, 'name'), item['name'], 'file path without file/directory collision')
             seen.add(normalized)
-            base = normalized.rsplit("/", 1)[-1]
-            collision |= base in bases
+            base = normalized.rsplit('/', 1)[-1]
+            if base in bases and collision is None:
+                collision = (pointer(current, 'name'), item['name'])
             bases.add(base)
             content = item[content_key]
+            content_path = path if embedded else pointer(current, content_key)
             if not isinstance(content, str):
-                fail("invalid_argument", "File content must be a string")
+                invalid(content_path, content, 'base64 string' if binary else 'UTF-8 source string')
             try:
-                raw = base64.b64decode(content, validate=True) if binary else content.encode("utf-8")
+                raw = base64.b64decode(content, validate=True) if binary else content.encode('utf-8')
             except (ValueError, UnicodeError):
-                fail("invalid_argument", "Invalid file encoding")
+                invalid(content_path, content, 'valid base64' if binary else 'valid UTF-8 string')
             if not binary and len(raw) > 256 * 1024:
-                fail("quota_exceeded", "Source file exceeds 256 KiB")
+                invalid(content_path, content, 'source at most 256 KiB', 'quota_exceeded')
             count += 1
             total += len(raw)
             if count > 128 or total > MAX_PROJECT_BYTES:
-                fail("quota_exceeded", "Project exceeds 128 files or 2 MiB decoded data")
+                invalid(content_path, content, 'at most 128 files and 2 MiB decoded data per project', 'quota_exceeded')
         return collision
 
     for group, items in groups.items():
-        text(group)
-        basenames[group] = file_set(items)
+        current = pointer('/fileGroups', group)
+        text(group, path=current)
+        basenames[group] = file_set(items, current)
     ids, board_ids = set(), set()
-    for board in doc["boards"]:
-        if not isinstance(board, dict):
-            fail("invalid_argument", "Invalid board")
-        for field in ("id", "boardKind", "activeFileGroupId"):
-            text(board.get(field))
-        if board["activeFileGroupId"] not in groups:
-            fail("invalid_argument", "Board file group does not exist")
-        if board.get("languageMode", "arduino") not in ("arduino", "micropython", "espidf"):
-            fail("invalid_argument", "Unknown language mode")
-        if board["boardKind"].startswith(("esp32", "xiao-esp32", "arduino-nano-esp32", "wemos-lolin32", "aitewinrobot-esp32")) or board.get("languageMode") == "espidf":
-            if basenames[board["activeFileGroupId"]]:
-                fail("invalid_argument", "ESP-IDF basename collision")
-        for key, content_key in (("spiffsFiles", "contentB64"), ("sdFiles", "contentB64")):
-            if key in board:
-                file_set(board[key], True, content_key)
-        if board["id"] in ids:
-            fail("invalid_argument", "Duplicate object ID")
-        ids.add(board["id"])
-        board_ids.add(board["id"])
-    for component in doc["components"]:
-        if not isinstance(component, dict) or not isinstance(component.get("properties"), dict):
-            fail("invalid_argument", "Invalid component")
-        text(component.get("id"))
-        text(component.get("metadataId"))
-        if component["id"] in ids:
-            fail("invalid_argument", "Duplicate object ID")
-        ids.add(component["id"])
-        if "sdFiles" in component["properties"]:
-            file_set(component["properties"]["sdFiles"], True, "contentB64")
-        if "sourceC" in component["properties"]:
-            content = component["properties"]["sourceC"]
-            if not isinstance(content, str):
-                fail("invalid_argument", "Embedded sourceC must be text")
-            if content:
-                file_set([{"name": "embedded-source.c", "content": content}])
-    for item in [*doc["boards"], *doc["components"]]:
-        if any(type(item.get(axis)) not in (int, float) for axis in ("x", "y")):
-            fail("invalid_argument", "Object coordinates must be numbers")
+    for kind in ('boards', 'components'):
+        for i, item in enumerate(doc[kind]):
+            current = pointer('/' + kind, i)
+            if not isinstance(item, dict):
+                invalid(current, item, 'native board object' if kind == 'boards' else 'native component object')
+            fields = ('id', 'boardKind', 'activeFileGroupId') if kind == 'boards' else ('id', 'metadataId')
+            for field in fields:
+                text(item.get(field, MISSING), path=pointer(current, field))
+            if item['id'] in ids:
+                invalid(pointer(current, 'id'), item['id'], 'unique board/component instance ID')
+            ids.add(item['id'])
+            for axis in ('x', 'y'):
+                value = item.get(axis, MISSING)
+                if not finite_number(value):
+                    invalid(pointer(current, axis), value, 'finite canvas coordinate number')
+            if kind == 'boards':
+                board_ids.add(item['id'])
+                group = item['activeFileGroupId']
+                if group not in groups:
+                    invalid(pointer(current, 'activeFileGroupId'), group, 'existing key in fileGroups')
+                mode = item.get('languageMode', 'arduino')
+                if mode not in ('arduino', 'micropython', 'espidf'):
+                    invalid(pointer(current, 'languageMode'), mode, 'one of arduino, micropython, espidf')
+                if item['boardKind'].startswith(('esp32', 'xiao-esp32', 'arduino-nano-esp32', 'wemos-lolin32', 'aitewinrobot-esp32')) or mode == 'espidf':
+                    if basenames[group]:
+                        path, name = basenames[group]
+                        invalid(path, name, 'unique basename within the board file group for ESP-IDF source mapping')
+                for key in ('spiffsFiles', 'sdFiles'):
+                    if key in item:
+                        file_set(item[key], pointer(current, key), True, 'contentB64')
+            else:
+                properties = item.get('properties', MISSING)
+                prop_path = pointer(current, 'properties')
+                if not isinstance(properties, dict):
+                    invalid(prop_path, properties, 'properties object; use get_reference(section=project) defaults or {}')
+                if 'sdFiles' in properties:
+                    file_set(properties['sdFiles'], pointer(prop_path, 'sdFiles'), True, 'contentB64')
+                if 'sourceC' in properties:
+                    content = properties['sourceC']
+                    if not isinstance(content, str):
+                        invalid(pointer(prop_path, 'sourceC'), content, 'UTF-8 source string')
+                    if content:
+                        file_set([{'name': 'embedded-source.c', 'content': content}], pointer(prop_path, 'sourceC'), embedded=True)
     wire_ids = set()
-    for wire in doc["wires"]:
+    for i, wire in enumerate(doc['wires']):
+        current = pointer('/wires', i)
         if not isinstance(wire, dict):
-            fail("invalid_argument", "Invalid wire")
-        text(wire.get("id"))
-        if wire["id"] in wire_ids:
-            fail("invalid_argument", "Duplicate wire ID")
-        wire_ids.add(wire["id"])
-        for key in ("start", "end"):
-            endpoint = wire.get(key)
+            invalid(current, wire, 'native wire object with id, start, end')
+        text(wire.get('id', MISSING), path=pointer(current, 'id'))
+        if wire['id'] in wire_ids:
+            invalid(pointer(current, 'id'), wire['id'], 'unique wire ID')
+        wire_ids.add(wire['id'])
+        for key in ('start', 'end'):
+            endpoint = wire.get(key, MISSING)
+            ep_path = pointer(current, key)
             if not isinstance(endpoint, dict):
-                fail("invalid_argument", "Invalid wire endpoint")
-            text(endpoint.get("componentId"))
-            text(endpoint.get("pinName"))
-            if endpoint["componentId"] not in ids:
-                fail("invalid_argument", "Wire references a missing object")
-            for axis in ("x", "y"):
-                if axis in endpoint and type(endpoint[axis]) not in (int, float):
-                    fail("invalid_argument", "Wire coordinates must be numbers")
-        if "color" in wire:
-            text(wire["color"], 100)
-        if "waypoints" in wire:
-            if not isinstance(wire["waypoints"], list) or any(not isinstance(p, dict) or any(type(p.get(axis)) not in (int, float) for axis in ("x", "y")) for p in wire["waypoints"]):
-                fail("invalid_argument", "Invalid wire waypoints")
-    if doc["activeBoardId"] is not None and doc["activeBoardId"] not in board_ids:
-        fail("invalid_argument", "Active board does not exist")
-    folders = doc.get("folderGroups", {})
+                invalid(ep_path, endpoint, 'endpoint object with componentId and pinName')
+            for field in ('componentId', 'pinName'):
+                text(endpoint.get(field, MISSING), path=pointer(ep_path, field))
+            if endpoint['componentId'] not in ids:
+                invalid(pointer(ep_path, 'componentId'), endpoint['componentId'], 'existing board or component instance ID')
+            for axis in ('x', 'y'):
+                if axis in endpoint and not finite_number(endpoint[axis]):
+                    invalid(pointer(ep_path, axis), endpoint[axis], 'finite coordinate number')
+        if 'color' in wire:
+            text(wire['color'], 100, pointer(current, 'color'))
+        if 'waypoints' in wire:
+            waypoints = wire['waypoints']
+            wp_path = pointer(current, 'waypoints')
+            if not isinstance(waypoints, list):
+                invalid(wp_path, waypoints, 'array of {x:number,y:number}')
+            for j, point in enumerate(waypoints):
+                point_path = pointer(wp_path, j)
+                if not isinstance(point, dict):
+                    invalid(point_path, point, 'waypoint object with x and y')
+                for axis in ('x', 'y'):
+                    value = point.get(axis, MISSING)
+                    if not finite_number(value):
+                        invalid(pointer(point_path, axis), value, 'finite coordinate number')
+    active = doc['activeBoardId']
+    if active is not None and (not isinstance(active, str) or active not in board_ids):
+        invalid('/activeBoardId', active, 'existing board instance ID or null')
+    folders = doc.get('folderGroups', {})
     if not isinstance(folders, dict):
-        fail("invalid_argument", "Invalid folderGroups")
+        invalid('/folderGroups', folders, 'object mapping existing file group IDs to folder arrays')
     for group, names in folders.items():
+        current = pointer('/folderGroups', group)
         if group not in groups or not isinstance(names, list):
-            fail("invalid_argument", "Invalid folder group")
-        for name in names:
-            filename(name)
+            invalid(current, names, 'folder array under an existing fileGroups key')
+        for i, name in enumerate(names):
+            filename(name, pointer(current, i))
     raw = canonical(doc)
     if len(raw) > MAX_PROJECT_BYTES:
-        fail("quota_exceeded", "Serialized native project exceeds 2 MiB")
+        invalid('', doc, 'serialized native project at most 2 MiB', 'quota_exceeded')
     return raw
 
 
-def patch(doc, changes):
+def validate_changes(changes):
     if not isinstance(changes, list) or not 1 <= len(changes) <= 128:
-        fail("invalid_argument", "changes must contain 1..128 operations")
-    result = copy.deepcopy(doc)
-    for change in changes:
-        if not isinstance(change, dict) or change.keys() - {"op", "path", "value"}:
-            fail("invalid_argument", "Invalid patch operation")
-        op, pointer = change.get("op"), change.get("path")
-        if op not in ("set", "remove") or (op == "set") != ("value" in change):
-            fail("invalid_argument", "set requires value; remove forbids value")
-        if not isinstance(pointer, str) or not pointer.startswith("/") or len(pointer) > 512 or re.search(r"~(?![01])", pointer):
-            fail("invalid_argument", "Invalid RFC6901 pointer")
-        tokens = [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
+        invalid('/changes', changes, 'array of 1..128 set/remove operations')
+    operations = []
+    for index, change in enumerate(changes):
+        current = pointer('/changes', index)
+        if not isinstance(change, dict):
+            invalid(current, change, 'operation object with op, path and optional value')
+        for field in change.keys() - {'op', 'path', 'value'}:
+            invalid(pointer(current, field), change[field], 'known operation field: op, path, value')
+        op, path = change.get('op', MISSING), change.get('path', MISSING)
+        if op not in ('set', 'remove'):
+            invalid(pointer(current, 'op'), op, 'one of set, remove')
+        if (op == 'set') != ('value' in change):
+            invalid(pointer(current, 'value'), change.get('value', MISSING), 'required value for set; absent for remove')
+        path_field = pointer(current, 'path')
+        if not isinstance(path, str) or not path.startswith('/') or len(path) > 512 or re.search(r'~(?![01])', path):
+            invalid(path_field, path, 'RFC 6901 pointer of at most 512 characters')
+        tokens = [part.replace('~1', '/').replace('~0', '~') for part in path[1:].split('/')]
         if tokens[0] not in PATCH_ROOTS:
-            fail("invalid_argument", "Patch root is not allowed")
+            invalid(path_field, path, 'pointer below ' + ', '.join(sorted(PATCH_ROOTS)))
+        operations.append((change, op, path, path_field, tokens))
+    return operations
+
+
+def patch(doc, changes):
+    operations = validate_changes(changes)
+    result = copy.deepcopy(doc)
+    for change, op, path, path_field, tokens in operations:
         parent = result
         for i, token in enumerate(tokens):
             last = i == len(tokens) - 1
             if isinstance(parent, list):
-                if not re.fullmatch(r"0|[1-9][0-9]*", token) or int(token) >= len(parent):
-                    fail("invalid_argument", "Patch array index must exist")
+                if not re.fullmatch(r'0|[1-9][0-9]*', token) or int(token) >= len(parent):
+                    invalid(path_field, path, 'existing array index (no implicit insertion)')
                 key = int(token)
             elif isinstance(parent, dict):
                 key = token
-                if (not last or op == "remove") and key not in parent:
-                    fail("invalid_argument", "Patch path does not exist")
+                if (not last or op == 'remove') and key not in parent:
+                    invalid(path_field, path, 'existing path for traversal/remove')
             else:
-                fail("invalid_argument", "Patch path traverses a scalar")
+                invalid(path_field, path, 'path traversing objects/arrays, not scalars')
             if last:
-                if op == "remove":
+                if op == 'remove':
                     del parent[key]
                 else:
-                    parent[key] = copy.deepcopy(change["value"])
+                    parent[key] = copy.deepcopy(change['value'])
             else:
                 parent = parent[key]
     return result
+
+
+def validate_save_arguments(arguments):
+    if not isinstance(arguments, dict):
+        invalid('', arguments, 'save_project argument object')
+    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version'}:
+        invalid(pointer('', field), arguments[field], 'known save argument: document, changes, project_id, expected_version')
+    updating = 'project_id' in arguments
+    if ('expected_version' in arguments) != updating:
+        field = 'expected_version' if updating else 'project_id'
+        invalid('/' + field, MISSING, 'required together: project_id and expected_version for updates')
+    if ('document' in arguments) == ('changes' in arguments):
+        invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document or changes')
+    if 'changes' in arguments and not updating:
+        invalid('/project_id', MISSING, 'existing project_id plus expected_version for changes')
+    if updating:
+        project_id = arguments['project_id']
+        if not isinstance(project_id, str) or not ID.fullmatch(project_id) or not project_id.startswith('p_'):
+            invalid('/project_id', project_id, 'opaque project ID: p_ followed by 32 lowercase hex characters')
+        version = arguments['expected_version']
+        if not isinstance(version, str) or not VERSION.fullmatch(version):
+            invalid('/expected_version', version, '64 lowercase hex characters from the last save_project version')
+    # Validate native snapshots first, so their pointers are document-relative.
+    raw = validate_document(arguments['document']) if 'document' in arguments else None
+    if 'changes' in arguments:
+        validate_changes(arguments['changes'])
+    if len(canonical(arguments)) > MAX_PROJECT_BYTES + 16384:
+        invalid('', arguments, 'save request at most 2 MiB + 16 KiB', 'quota_exceeded')
+    return raw
 
 
 class ProjectStore:
@@ -374,7 +510,7 @@ class ProjectStore:
         try:
             return bounded(operation())
         except CatalogError as exc:
-            return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500]}}
+            return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
         except FileNotFoundError:
             return {"ok": False, "error": {"code": "not_found", "message": "Project or artifact not found"}}
         except OSError as exc:
@@ -385,23 +521,11 @@ class ProjectStore:
 
     def save_project(self, **arguments):
         def run():
-            if arguments.keys() - {"document", "changes", "project_id", "expected_version"}:
-                fail("invalid_argument", "Unknown save argument")
+            raw = validate_save_arguments(arguments)
             updating = "project_id" in arguments
-            if ("expected_version" in arguments) != updating or ("document" in arguments) == ("changes" in arguments) or ("changes" in arguments and not updating):
-                fail("invalid_argument", "Updates require project_id, expected_version and exactly one of document/changes")
-            if len(canonical(arguments)) > MAX_PROJECT_BYTES + 16384:
-                fail("quota_exceeded", "Save request exceeds quota")
             project_id = arguments.get("project_id")
-            if updating:
-                self._id(project_id, "p")
-                if not isinstance(arguments["expected_version"], str) or not VERSION.fullmatch(arguments["expected_version"]):
-                    fail("invalid_argument", "Invalid expected_version")
-            else:
+            if not updating:
                 project_id = "p_" + uuid.uuid4().hex
-            # Validate snapshots before creating any project directory.
-            if "document" in arguments:
-                raw = validate_document(arguments["document"])
             with self._locked(True) as root:
                 if not updating and self._usage(root) + len(raw) + 1024 > self.max_storage_bytes:
                     fail("quota_exceeded", "Storage quota reached; existing files retained")

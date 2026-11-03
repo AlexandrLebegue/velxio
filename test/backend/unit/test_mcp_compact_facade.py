@@ -96,6 +96,16 @@ class FacadeTests(unittest.IsolatedAsyncioTestCase):
         response = await sdk.callback('search_catalog', {'cursor':'stale','other':1})
         self.assertEqual(json.loads(response[0].text)['error']['code'], 'invalid_argument')
         runtime.call.assert_not_called()
+        # A save rejected before runtime/storage must retain the native field error.
+        malformed = {'format':'velxio-project','version':1,'boards':[],'fileGroups':{},
+                     'components':[{'id':'epd','x':0,'y':0,'properties':{}}],
+                     'wires':[],'activeBoardId':None}
+        response = await sdk.callback('save_project', {'document':malformed})
+        error = json.loads(response[0].text)['error']
+        self.assertEqual(error['path'], '/components/0/metadataId')
+        self.assertEqual(error['received'], '<missing>')
+        self.assertIn('string', error['expected'])
+        runtime.call.assert_not_called()
 
     async def test_snapshot_hash_tamper_refused(self):
         source = ROOT / 'backend/app/mcp/compact/catalog.snapshot.json'

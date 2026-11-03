@@ -23,18 +23,57 @@ def enum(*values):
 identifier = string()
 version = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 file = obj({"name": string(240), "content": {"type": "string", "maxLength": 262144}}, ["name", "content"])
+
+
+def native_obj(properties, required, description):
+    # Preserve UI extensions while documenting the fields needed to author a snapshot.
+    return {**obj(properties, required), "additionalProperties": True, "description": description}
+
+
+coordinate = {"type": "number", "description": "Finite canvas coordinate, e.g. 0."}
+board = native_obj({
+    "id": {**identifier, "description": "Unique instance ID used by wires and activeBoardId, e.g. esp."},
+    "boardKind": {**identifier, "description": "Native board key, e.g. esp32 (not board:esp32). Obtain it with get_reference(section=project)."},
+    "x": coordinate, "y": coordinate,
+    "activeFileGroupId": {**identifier, "description": "Key present in document.fileGroups, e.g. sketch."},
+    "languageMode": {**enum("arduino", "micropython", "espidf"), "default": "arduino",
+                     "description": "Source language; Arduino uses sketch.ino, ESP-IDF main.c."},
+    "rotation": {"type": "number", "description": "Clockwise degrees, e.g. 0 or 90."},
+    "libraries": {"type": "array", "items": {"type": "string"}, "description": "Declared library names, e.g. [\"GxEPD2\"]."},
+    "boardOptions": {"type": "object", "description": "Native UI build options, preserved."},
+}, ["id", "boardKind", "x", "y", "activeFileGroupId"],
+    'Native board instance. Minimal: {"id":"esp","boardKind":"esp32","x":0,"y":0,"activeFileGroupId":"sketch"}.')
+component = native_obj({
+    "id": {**identifier, "description": "Unique instance ID referenced by wires, e.g. epd."},
+    "metadataId": {**identifier, "description": "Native metadata key, e.g. epaper-1in54-bw (not component:epaper-1in54-bw and not type)."},
+    "x": coordinate, "y": coordinate,
+    "properties": {"type": "object", "description": 'Required, even if empty. Use get_reference(section=project) defaults, e.g. {"panelKind":"epaper-1in54-bw","refreshMs":50}.'},
+    "rotation": {"type": "number", "description": "Clockwise degrees, e.g. 0."},
+}, ["id", "metadataId", "x", "y", "properties"], "Native component instance; metadataId selects its catalog definition.")
+endpoint = native_obj({
+    "componentId": {**identifier, "description": "Existing board or component instance ID, e.g. esp or epd."},
+    "pinName": {**identifier, "description": "Exact case-sensitive pin name from get_reference(section=pins), e.g. 18 or SCK."},
+    "x": coordinate, "y": coordinate,
+}, ["componentId", "pinName"], 'Wire endpoint, e.g. {"componentId":"epd","pinName":"SCK"}. Coordinates are optional.')
+wire = native_obj({
+    "id": {**identifier, "description": "Unique wire ID, e.g. w-sck."},
+    "start": endpoint, "end": endpoint,
+    "color": {**string(100), "description": "Optional CSS color, e.g. #ffaa00."},
+    "waypoints": {"type": "array", "items": native_obj({"x": coordinate, "y": coordinate}, ["x", "y"], "Finite waypoint coordinates.")},
+}, ["id", "start", "end"], 'Native wire: {"id":"w-sck","start":{"componentId":"esp","pinName":"18"},"end":{"componentId":"epd","pinName":"SCK"}}.')
 document = obj({
     "format": {"const": "velxio-project"}, "version": {"const": 1},
     "name": string(200), "exportedAt": string(80),
-    # UI-owned nested shapes are preserved, not asserted to be fully validated here.
-    "boards": {"type": "array", "maxItems": 8, "items": {"type": "object"}},
+    "boards": {"type": "array", "maxItems": 8, "items": board},
     "fileGroups": {"type": "object", "maxProperties": 128, "additionalProperties": {
-        "type": "array", "maxItems": 128, "items": file}},
+        "type": "array", "maxItems": 128, "items": file},
+        "description": 'Map group IDs to source files, e.g. {"sketch":[{"name":"sketch.ino","content":""}]}. Each board references a key via activeFileGroupId.'},
     "folderGroups": {"type": "object", "additionalProperties": {"type": "array", "items": string(240)}},
-    "components": {"type": "array", "maxItems": 512, "items": {"type": "object"}},
-    "wires": {"type": "array", "maxItems": 1024, "items": {"type": "object"}},
-    "activeBoardId": {"type": ["string", "null"], "maxLength": 200},
+    "components": {"type": "array", "maxItems": 512, "items": component},
+    "wires": {"type": "array", "maxItems": 1024, "items": wire},
+    "activeBoardId": {"type": ["string", "null"], "maxLength": 200, "description": "Existing board instance ID, e.g. esp, or null."},
 }, ["format", "version", "boards", "fileGroups", "components", "wires", "activeBoardId"])
+document["description"] = "Native .vlx snapshot. Start from get_reference(id=board:esp32,section=project). Catalog IDs are not native boardKind/metadataId values."
 change = obj({
     "op": enum("set", "remove"),
     "path": {"type": "string", "maxLength": 512,
@@ -64,7 +103,8 @@ _INPUTS = {
         "kind": {**enum("all", "component", "board", "example"), "default": "all"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}}),
-    "get_reference": obj({"id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview"}}, ["id"]),
+    "get_reference": obj({"id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview",
+        "description": "project: board:esp32 returns a minimal native document ready for save_project; component:epaper-1in54-bw returns components[] to append and exact pinNames. Other board/component project bridges: unknown. Example project sources are omitted; code retrieves them."}}, ["id"]),
     "save_project": save,
     "check_project": obj({"project_id": identifier, "version": version}, ["project_id", "version"]),
     "build_project": build,
@@ -74,7 +114,12 @@ _INPUTS = {
         "encoding": {**enum("utf8", "base64"), "default": "utf8"}}, ["artifact_id"]),
 }
 
-_ERROR = obj({"ok": {"const": False}, "error": obj({"code": string(80), "message": string(500)}, ["code", "message"])}, ["ok", "error"])
+_ERROR = obj({"ok": {"const": False}, "error": obj({
+    "code": string(80), "message": string(500),
+    "path": {"type": "string", "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
+    "received": {"type": "string", "maxLength": 200, "description": "JSON value preview (truncated), or <missing>."},
+    "expected": string(500),
+}, ["code", "message"])}, ["ok", "error"])
 artifact = obj({"id": identifier, "kind": string(80), "size_bytes": {"type": "integer", "minimum": 0}, "sha256": version}, ["id", "kind", "size_bytes", "sha256"])
 _RESULTS = {
     "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 50, "items": obj({

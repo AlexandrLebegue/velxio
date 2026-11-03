@@ -9,14 +9,14 @@ from pathlib import Path
 
 from .catalog import Catalog, bounded
 from .contracts import TOOL_SCHEMAS
-from .projects import ProjectStore
+from .projects import ProjectStore, MISSING, pointer, validate_save_arguments, validation_error
 from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
 
 DESCRIPTIONS = {
-    'search_catalog': 'Search the real catalog; five results by default, stateless offset pagination (limit up to 50).',
-    'get_reference': 'Reference by id and optional section; code only with explicit code section.',
-    'save_project': 'Save native snapshot or allowlisted changes with required CAS for updates.',
+    'search_catalog': 'Search IDs, names, tags, summaries and keywords; case, hyphens, spaces and underscores are ignored. Five results by default; offset pagination, limit up to 50.',
+    'get_reference': 'Reference by catalog id. section=project gives a saveable native ESP32 document or an e-paper component fragment with exact pinNames; other bridges may be unknown. Example source code only in section=code.',
+    'save_project': 'Save a native document or allowlisted changes with CAS for updates. Get a minimal document/fragment via get_reference(section=project) first. Validation errors identify path, received and expected.',
     'check_project': 'Structural checks of an exact version; no electrical or functional certification.',
     'build_project': 'Start or query an ESP32 offline build in the active REST owner; no installation.',
     'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices.',
@@ -30,6 +30,36 @@ def _normalize_arguments(arguments):
     if isinstance(arguments, dict):
         return {key: value for key, value in arguments.items() if key != 'cursor'}
     return arguments
+
+
+def _save_schema_error(exc, arguments):
+    # Prefer the native validator's precise expected values and missing fields.
+    try:
+        validate_save_arguments(arguments)
+    except ValueError as native:
+        if hasattr(native, 'details'):
+            return native
+        raise
+    parts = list(exc.absolute_path)
+    if parts and parts[0] == 'document':
+        parts.pop(0)
+    path = ''
+    for part in parts:
+        path = pointer(path, part)
+    received = exc.instance
+    if exc.validator == 'required':
+        missing = sorted(set(exc.validator_value) - received.keys())[0]
+        path = pointer(path, missing)
+        received = MISSING
+        expected = 'required field: ' + missing
+    elif exc.validator == 'additionalProperties':
+        unknown = sorted(set(received) - set(exc.schema.get('properties', {})))[0]
+        path = pointer(path, unknown)
+        received = received[unknown]
+        expected = 'known field: ' + ', '.join(exc.schema.get('properties', {}))
+    else:
+        expected = str(exc.validator) + ': ' + json.dumps(exc.validator_value, ensure_ascii=True)
+    return validation_error(path, received, expected)
 
 
 class NamespaceStore(ProjectStore):
@@ -152,9 +182,13 @@ def create_facade(app, **runtime_options):
             if name in TOOL_SCHEMAS:
                 validate(instance=arguments, schema=TOOL_SCHEMAS[name]['inputSchema'])
             result = bounded(await runtime.call(name, arguments))
-        except ValidationError:
-            result = {'ok': False, 'error': {'code': 'invalid_argument',
-                'message': 'Arguments do not match the tool input schema'}}
+        except ValidationError as exc:
+            if name == 'save_project':
+                error = _save_schema_error(exc, arguments)
+                result = {'ok': False, 'error': {'code': error.code, 'message': str(error), **error.details}}
+            else:
+                result = {'ok': False, 'error': {'code': 'invalid_argument',
+                    'message': 'Arguments do not match the tool input schema'}}
         except (OSError, ValueError, KeyError, TypeError) as exc:
             result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'preflight_unknown'),
                 'message': 'Local prerequisite unavailable or invalid; no installation attempted'}}
