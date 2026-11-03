@@ -384,3 +384,52 @@ printf 'Smoke exit=%s; inspecter preuves et diagnostics avant toute suite\n' "$S
 Le code 0 et `completed:true` ne sont acceptables qu'avec six outils, `structure_status=valid`, un build `state=done`, `success:true`, `test_only:false` et les tailles/hashes d'artefacts réellement relus. Ne pas exiger le SHA du firmware du run E comme un firmware copié de référence : le nouveau build doit produire ses propres preuves, avec `reproducibility_limited=true` et cache partagé off. Un code 1/3 ou une tentative de téléchargement/installation impose l'examen des logs ; aucun cutover ni modification de service n'est déclenché par cette recette. La borne de polling n'abrège pas le drain réel du propriétaire.
 
 Le warning E `-Wcomment` est localisé par `proof-e/.../live.log` dans **le template** `backend/app/services/esp-idf-template/main/main.cpp:6` : `The CMakeLists.txt globs *.cpp/*.c into SRCS`. Le texte `*.cpp/*.c` contient le début d'un commentaire bloc à l'intérieur du commentaire bloc déjà ouvert. Ce texte est absent du `.vlx` ; ses commentaires d'arguments `/*CS=*/` sont des commentaires fermés dans du code et ne causent pas ce warning. Sa suppression demande une correction du template et une revue de son hash approuvé, hors du périmètre de ce jalon ; la reconstruction depuis `44d7e89` le conserve. Aucun correctif de warning n'est prétendu appliqué au sketch.
+
+## 2h — inventaire local avant le serveur et arrêt borné
+
+Cause du refus production : `backend/app/mcp/compact/facade.py:54–68` lit `MCP_COMPACT_INVENTORY` ou, par défaut, `/app/data/mcp-compact-inventory/inventory.json`. Si le fichier manque, `inventories()` renvoie `(None, None)` ; ces objets sont capturés pour l'identité lors du premier save/check/build (`facade.py:89–94`). La présence des libs dans `/root/Arduino/libraries` ne crée pas cette preuve. L'ancienne version de `packaging/mcp-compact/entrypoint.sh` démarrait directement les serveurs après activation IDF, sans appeler la routine d'inventaire pourtant copiée par `prepare.py:74–75`. `builds.py:217–218` refusait donc correctement `dependencies_unknown`. Le smoke fournissait explicitement son propre inventaire, ce qui explique l'écart.
+
+Le nouvel entrypoint, avant nginx/uvicorn et l'import de `app.main`, lance désormais :
+
+```sh
+"${APP_PYTHON:-/usr/local/bin/python3}" /app/mcp-compact-scripts/mcp-compact-inventory.py \
+  --startup --output "$INVENTORY_RUN"
+```
+
+`INVENTORY_RUN` est un nouveau répertoire privé `startup-XXXXXXXX` sous `${DATA_DIR:-/app/data}/mcp-compact-inventory/`. Le chemin `inventory.json` y est exporté dans `MCP_COMPACT_INVENTORY` **pour le processus serveur enfant**. Il n'apparaît donc pas nécessairement dans un simple `docker exec env`, qui reprend l'environnement configuré du conteneur, pas celui modifié par son entrypoint. Un inventaire explicitement fourni par le manager reste respecté et revérifié par les contrôles existants.
+
+`--startup` importe uniquement le service ESP-IDF pour sa découverte locale, sans routes ni ArduinoCLI : il reprend `_idf_target`, `_arduino_supports_target`, `_use_idf5`, `_idf_root`, `_arduino_path_for`, `_find_arduino_libraries_dir` et `_build_env`. Il épingle les exécutables trouvés dans le **PATH effectif de compilation**, les SDK sélectionnés et les trois arbres réels GxEPD2/GFX/BusIO du volume. Les alias d'environnement historiques `/opt/esp-idf` et `/opt/arduino-esp32` ne sont pas pris aveuglément pour les racines sélectionnées : dans l'image constatée, le service choisit IDF v5 et Arduino 3. Les racines sélectionnées doivent être canoniques et les preuves sont revérifiées avant succès. Aucun compiler, gestionnaire de paquets, installation ou téléchargement n'est appelé par cette génération.
+
+L'inventaire automatique est déclaré **incomplet** (`complete:false`) car seules ces trois bibliothèques sont couvertes ; une lib non inventoriée reste inconnue et le garde-fou `dependencies_unknown` demeure intact. Une lib/outillage manquant ou modifié invalide les preuves. Si la génération échoue, ses fichiers sont conservés, le processus reçoit un chemin neuf `unavailable.json` absent et l'UI/save/check restent servis ; aucun manifeste partiel ou ancien n'est réutilisé pour autoriser un build. Après correction des prérequis, redémarrage manager nécessaire pour générer et charger un nouveau jeu avant les requêtes.
+
+La boucle de démarrage REST peut encore avoir les effets ArduinoCLI historiques déjà signalés par le manager ; ce correctif n'ajoute aucun appel à ce service et ne prétend pas que ces effets préexistants ont été corrigés. Les fichiers sources compilateur et les empreintes policy ne changent pas. La prochaine image doit être reconstruite depuis ce nouveau commit ; l'ID immuable `65242fb8…` de l'image précédente ne reçoit pas ces sources automatiquement.
+
+Vérification manager ultérieure, **non exécutée ici**, après rebuild et lancement autorisé : repérer l'inventaire dans l'environnement du vrai worker puis vérifier les mêmes hashes/primitives de production, sans compiler :
+
+```sh
+docker exec -i velxio /usr/local/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+from app.mcp.compact import LibraryInventory, ToolchainInventory
+paths = set()
+for file in Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+        if b'app.main:app' not in file.read_bytes().split(b'\0'):
+            continue
+        for entry in (file.parent/'environ').read_bytes().split(b'\0'):
+            if entry.startswith(b'MCP_COMPACT_INVENTORY='):
+                paths.add(entry.partition(b'=')[2].decode())
+    except (FileNotFoundError, ProcessLookupError):
+        continue
+if len(paths) != 1:
+    raise SystemExit('Expected one live REST inventory path')
+path = paths.pop()
+doc = json.loads(Path(path).read_bytes())
+libraries = LibraryInventory(doc['library_root'], doc['libraries'], complete=doc['complete']).verify()
+toolchains = ToolchainInventory(doc['toolchain_root'], doc['toolchains'], complete=doc['complete']).verify()
+print(json.dumps({'inventory':path, 'complete':doc['complete'],
+                  'libraries':sorted(libraries['entries']), 'targets':sorted(toolchains['toolchains'])}))
+PY
+```
+
+Le script de cutover utilise maintenant `docker stop --time 30` aux deux sites : arrêt de l'original et arrêt du remplaçant pendant rollback. Docker peut forcer l'arrêt après ces 30 secondes si PID1 ne relaie pas SIGTERM ; le script ne reste plus bloqué indéfiniment sur l'ancien entrypoint. Aucun changement de service ou de données n'est exécuté par l'agent.

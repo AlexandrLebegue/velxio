@@ -9,11 +9,12 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'backend'))
-from app.mcp.compact import Catalog, TOOL_SCHEMAS, ProjectStore
+from app.mcp.compact import Catalog, CatalogError, TOOL_SCHEMAS, ProjectStore, ProjectChecker, BuildService
 from app.mcp.compact.facade import CompactRuntime, NamespaceStore
 from app.mcp.compact.builds import proof_bytes
 from app.mcp.compact.checks import CompilerPolicy, LibraryInventory
@@ -124,6 +125,88 @@ class FacadeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(forbidden, entry.replace('# Its own environment/dependency failure stops startup; no healing/fallback.', '').replace('# export.sh is the existing local SDK activation, never install.sh.', ''))
         self.assertIn('wait -n', entry)
         self.assertIn('--workers 1', entry)
+
+
+class StartupInventoryTests(unittest.TestCase):
+    """Local fixture hashes and explicit service-selection doubles; no real SDK."""
+    def fixture(self, root):
+        idf, arduino, libs, tools = (root / name for name in ('idf', 'arduino', 'libraries', 'bin'))
+        for name in ('tools/idf.py', 'tools/cmake/project.cmake', 'version.txt'):
+            file = idf/name; file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('5.5.4' if name == 'version.txt' else '# CONTROLLED SDK PROOF')
+        arduino.mkdir(); (arduino/'CMakeLists.txt').write_text('# CONTROLLED CORE PROOF')
+        for folder, name in [('GxEPD2','GxEPD2'), ('Adafruit_GFX_Library','Adafruit GFX Library'), ('Adafruit_BusIO','Adafruit BusIO')]:
+            path = libs/folder; path.mkdir(parents=True)
+            (path/'library.properties').write_text('name='+name+'\nversion=TEST-ONLY\n')
+            (path/'a.h').write_text('// CONTROLLED LIBRARY PROOF')
+        tools.mkdir()
+        for name in ('xtensa-esp32-elf-gcc','cmake','ninja','python'):
+            file = tools/name; file.write_text('CONTROLLED NONEXECUTABLE CONTENT; NEVER RUN'); file.chmod(0o755)
+        service = SimpleNamespace(available=True, _idf_target=lambda _: 'esp32',
+            _arduino_supports_target=lambda _: True, _use_idf5=lambda *args: True,
+            _idf_root=lambda _: str(idf), _arduino_path_for=lambda _: str(arduino),
+            _find_arduino_libraries_dir=lambda: libs, _build_env=lambda *args, **kw: {'PATH':str(tools)})
+        module = ModuleType('app.services.espidf_compiler'); module.espidf_compiler = service
+        return module, libs, tools
+
+    def test_startup_loads_verified_subset_and_unlisted_dependency_stays_unknown(self):
+        routine = load('scripts/mcp-compact-inventory.py','startup_inventory_test')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); module, libs, tools = self.fixture(root)
+            output = root/'inventory'
+            with patch.dict(sys.modules, {'app.services.espidf_compiler':module}), \
+                    patch('subprocess.run', side_effect=AssertionError('NO COMPILE/INSTALL/DOWNLOAD')):
+                doc = routine.startup(output)
+            self.assertFalse(doc['complete'])
+            runtime = CompactRuntime(object(), inventory_file=output/'inventory.json')
+            inventory, toolchains = runtime.inventories()
+            self.assertEqual(set(inventory.verify()['entries']), {'GxEPD2','Adafruit GFX Library','Adafruit BusIO'})
+            self.assertEqual(toolchains.verify()['toolchains']['esp32:esp32:esp32|arduino']['idf_root'], str(root/'idf'))
+            project = json.loads((ROOT/'review/mcp-compact-smoke-20261103/hello-epaper-esp32.vlx').read_bytes())
+            project['boards'][0]['libraries'].append('ArduinoJson')
+            store = ProjectStore(root/'store')
+            saved = store.save_project(document=project); self.assertTrue(saved['ok'], saved)
+            checker = ProjectChecker(store, runtime.catalog, inventory=inventory, source_root=ROOT)
+            with self.assertRaises(CatalogError) as failure:
+                BuildService(store, checker)._preflight(saved['project_id'], saved['version'], 'esp32')
+            self.assertEqual(failure.exception.code, 'dependencies_unknown')
+            (libs/'GxEPD2/library.properties').write_text('altered')
+            with self.assertRaises(ValueError): inventory.verify()
+
+    def test_missing_local_tool_or_library_does_not_install_or_reuse_evidence(self):
+        routine = load('scripts/mcp-compact-inventory.py','startup_inventory_missing_test')
+        for missing in ('gcc','library'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); module, libs, tools = self.fixture(root)
+                (tools/'xtensa-esp32-elf-gcc' if missing == 'gcc' else libs/'Adafruit_BusIO/library.properties').unlink()
+                with patch.dict(sys.modules, {'app.services.espidf_compiler':module}), \
+                        patch('subprocess.run', side_effect=AssertionError('INSTALL/DOWNLOAD FORBIDDEN')):
+                    with self.assertRaises((ValueError, FileNotFoundError)):
+                        routine.startup(root/'inventory')
+                self.assertFalse((root/'inventory/inventory.json').exists())
+
+    def test_entrypoint_sets_inventory_before_app_and_hides_failed_partial_manifest(self):
+        import os
+        import subprocess
+        prefix = (ROOT/'packaging/mcp-compact/entrypoint.sh').read_text().split('nginx -t',1)[0]
+        for exit_code in (0,1):
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); idf = root/'idf'; idf.mkdir()
+                (idf/'export.sh').write_text('# controlled local activation only\n')
+                app_python = root/'app-python-double'
+                app_python.write_text('#!/bin/bash\nprintf \'{}\\n\' > "${@: -1}/inventory.json"\nexit ' + str(exit_code) + '\n')
+                app_python.chmod(0o755)
+                result = subprocess.run(['bash','-c',prefix+'\nprintf "%s\\n" "$MCP_COMPACT_INVENTORY"\n'],
+                    env={**os.environ,'SECRET_KEY':'CONTROLLED','DATA_DIR':str(root/'data'),
+                         'IDF_PATH':str(idf),'APP_PYTHON':str(app_python),'MCP_COMPACT_INVENTORY':''},
+                    capture_output=True,text=True,timeout=10)
+                self.assertEqual(result.returncode,0,result.stderr)
+                selected = Path(result.stdout.splitlines()[-1])
+                self.assertEqual(selected.name, 'inventory.json' if exit_code == 0 else 'unavailable.json')
+                self.assertTrue((selected.parent/'inventory.json').exists())
+                if exit_code:
+                    self.assertFalse(selected.exists())
+                    self.assertEqual(CompactRuntime(object(),inventory_file=selected).inventories(), (None,None))
 
 
 @unittest.skipUnless(all(importlib.util.find_spec(m) for m in ('fastapi', 'mcp', 'httpx')), 'ASGI SDK absent locally; no installation authorized')

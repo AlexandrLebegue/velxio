@@ -220,7 +220,7 @@ rollback() {
         if printf '%s\n' "$names" | python3 -c 'import sys;sys.exit(0 if "velxio" in sys.stdin.read().splitlines() else 1)'; then
             image=$(docker container inspect --format '{{.Image}}' "$PROD") || return
             [ "$image" = "$EXPECTED" ] || { log 'Refuse to stop an unexpected replacement'; return 1; }
-            mutate docker stop --time -1 "$PROD" || return
+            mutate docker stop --time 30 "$PROD" || return
             mutate docker rename "$PROD" "$FAILED" || return
         fi
         mutate docker rename "$BEFORE" "$PROD" || return
@@ -254,7 +254,7 @@ fi
 STARTED=1
 mutate systemctl stop "$UNIT"
 mutate systemctl disable "$UNIT"
-mutate docker stop --time -1 "$PROD"
+mutate docker stop --time 30 "$PROD"
 mutate docker rename "$PROD" "$BEFORE"
 API_VERSION=$(docker version --format '{{.Server.APIVersion}}')
 [[ "$API_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]

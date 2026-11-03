@@ -16,6 +16,24 @@ test -f "$IDF_EXPORT" || { echo 'Installed IDF export missing; no setup attempte
 set +u
 . "$IDF_EXPORT"
 set -u
+# Inventory must be generated BEFORE app.main captures the process environment.
+# Existing explicit manager inventories remain supported; build revalidates them.
+if [ -z "${MCP_COMPACT_INVENTORY:-}" ]; then
+    INVENTORY_BASE="${DATA_DIR:-/app/data}/mcp-compact-inventory"
+    mkdir -p "$INVENTORY_BASE"
+    INVENTORY_RUN=$(mktemp -d "$INVENTORY_BASE/startup-XXXXXXXX")
+    export MCP_COMPACT_INVENTORY="$INVENTORY_RUN/inventory.json"
+    echo "Verifying compact local inventory: $MCP_COMPACT_INVENTORY" >&2
+    if "${APP_PYTHON:-/usr/local/bin/python3}" /app/mcp-compact-scripts/mcp-compact-inventory.py \
+        --startup --output "$INVENTORY_RUN"; then
+        echo "Compact inventory verified: $MCP_COMPACT_INVENTORY" >&2
+    else
+        # Preserve failed evidence, never reuse stale/partial manifests. UI and
+        # save/check remain available; builds keep their dependencies_unknown guard.
+        export MCP_COMPACT_INVENTORY="$INVENTORY_RUN/unavailable.json"
+        echo "Compact inventory unavailable; builds refused, no setup attempted" >&2
+    fi
+fi
 nginx -t
 uvicorn app.main:app --host 127.0.0.1 --port 8001 --workers 1 &
 UVICORN_PID=$!

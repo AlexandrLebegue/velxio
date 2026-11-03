@@ -20,6 +20,16 @@ class CutoverScriptTests(unittest.TestCase):
         result = subprocess.run(['bash', '-n', str(SCRIPT)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_original_and_replacement_stops_have_a_bounded_grace_period(self):
+        # Inspect every actual stop invocation, including rollback. No Docker call.
+        import shlex
+        stops = [shlex.split(line) for line in SCRIPT.read_text().splitlines()
+                 if line.strip().startswith('mutate docker stop ')]
+        self.assertEqual(len(stops), 2)
+        for command in stops:
+            self.assertEqual(command[:5], ['mutate','docker','stop','--time','30'])
+            self.assertNotIn('-1', command)
+
     def test_default_explicit_and_rollback_dry_runs_never_mutate_services(self):
         with tempfile.TemporaryDirectory(prefix='compact-cutover-DRY-RUN-') as temporary:
             root = Path(temporary)
