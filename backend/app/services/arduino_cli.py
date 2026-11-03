@@ -961,6 +961,26 @@ class ArduinoCLIService:
                     # legacy targets.
                     shutil.rmtree(scope_dir.parent, ignore_errors=True)
 
+    def offline_capabilities(self):
+        return {'ready': False, 'blockers': ['arduino_platform_recipes_and_prebuild_hooks_not_network_isolated']}
+
+    async def compile_offline(self, files, board_fqbn, *, offline_evidence=None, library_proofs=None,
+                              board_options=None, allowed_libraries=None, owner_id=None):
+        """Fail-closed internal API: no core query/install, fallback or recipe run.
+
+        Existing platform recipes/prebuild hooks execute arbitrary commands.
+        A verified installed-core inventory alone cannot prove them offline.
+        """
+        evidence = offline_evidence or {}
+        core = evidence.get('arduino_core') or {}
+        expected = ':'.join(board_fqbn.split(':')[:2])
+        if core.get('id') != expected or not core.get('platform_sha256') or not core.get('version'):
+            return {'success': False, 'error_kind': 'core_unavailable', 'error': 'Installed core proof is required; auto-install forbidden', 'stdout': '', 'stderr': ''}
+        if allowed_libraries is None or set(allowed_libraries) - set(library_proofs or {}):
+            return {'success': False, 'error_kind': 'dependency_unavailable', 'error': 'Closed verified library scope required', 'stdout': '', 'stderr': ''}
+        return {'success': False, 'error_kind': 'offline_guard_unavailable',
+                'error': 'Platform recipes/hooks are not isolated from network/install commands; no compiler executed', 'stdout': '', 'stderr': ''}
+
     async def list_boards(self) -> list:
         """
         List available Arduino boards

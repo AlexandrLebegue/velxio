@@ -99,7 +99,7 @@ _RESULTS = {
         ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
     "build_project": obj({"build_id": identifier, "state": enum("pending", "running", "done", "error", "interrupted"),
         "project_id": identifier, "version": version, "board_id": identifier,
-        "test_only": {"const": True}, "log_truncated": {"type": "boolean"},
+        "test_only": {"type": "boolean"}, "log_truncated": {"type": "boolean"},
         "provenance_sha256": version, "toolchain_version": string(200),
         "firmware_type": {"type": ["string", "null"], "enum": [None, "bin", "hex", "uf2", "elf"]},
         "reproducibility_limited": {"const": True}, "shared_cache_allowed": {"const": False},

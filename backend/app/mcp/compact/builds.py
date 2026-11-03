@@ -67,6 +67,16 @@ class ToolchainInventory(LibraryInventory):
                     fail("preflight_unknown", "Toolchain member hash/size differs")
             toolchains[name] = {"version": doc["version"], "manifest_sha256": entry["sha256"], "members": members,
                                 "test_only": doc.get("test_only") is True}
+            if 'arduino_core' in doc:
+                core = doc['arduino_core']
+                if not isinstance(core, dict) or core.get('id') != ':'.join(name.split('|')[0].split(':')[:2]) or not isinstance(core.get('version'), str) or not core['version']:
+                    fail('preflight_unknown', 'Installed Arduino core identity/version is not proven')
+                for label in ('platform', 'boards'):
+                    path = core.get(label + '_path')
+                    digest = core.get(label + '_sha256')
+                    if not isinstance(path, str) or not path.endswith(label + '.txt') or not any(m['path'] == path and m['sha256'] == digest for m in members):
+                        fail('preflight_unknown', 'Arduino platform/boards evidence must be among verified members')
+                toolchains[name]['arduino_core'] = copy.deepcopy(core)
         return {**verified, "toolchains": toolchains}
 
 
@@ -213,8 +223,8 @@ class BuildService:
             fail("toolchain_unknown", "Toolchain proof cannot be verified; no setup or installation attempted")
         key = entry["fqbn"] + "|" + mode
         toolchain = toolchains["toolchains"].get(key)
-        if toolchain is None or not toolchain["test_only"]:
-            fail("toolchain_unknown", "Stage 3c requires explicit test-only toolchain evidence; production owner integration is blocked")
+        if toolchain is None or toolchain["test_only"] is not self.adapter.test_only:
+            fail("toolchain_unknown", "Toolchain execution mode must match the sealed adapter mode")
         lib_proof = {}
         for name in libraries:
             evidence = inventory["entries"][name]
@@ -225,15 +235,15 @@ class BuildService:
             lib_proof[name] = {**evidence, "version": match[1].decode("utf8")[:200] if match else "unknown"}
         provenance = {"project_id": pid, "version": version, "board_id": board_id, "catalog_revision": self.checker.catalog.revision,
                       "compiler_policy_sources": report["compiler_policy_sources"], "toolchain": toolchain, "libraries": lib_proof,
-                      "adapter": {"name": self.adapter.name, "test_only": True},
-                      "reproducibility_limited": True, "shared_cache_allowed": False, "test_only": True}
+                      "adapter": {"name": self.adapter.name, "test_only": self.adapter.test_only},
+                      "reproducibility_limited": True, "shared_cache_allowed": False, "test_only": self.adapter.test_only}
         request = {"project_id": pid, "version": version, "board_id": board_id, "board_fqbn": entry["fqbn"], "board_kind": board["boardKind"],
                    "files": copy.deepcopy(doc["fileGroups"][board["activeFileGroupId"]]), "language": mode,
                    "board_options": copy.deepcopy(board.get("boardOptions")), "libraries": copy.deepcopy(libraries),
                    "spiffs_files": [{**{k: v for k, v in f.items() if k != "contentB64"}, "content_b64": f["contentB64"]} for f in board.get("spiffsFiles", [])],
                    "native_subset": {"board": copy.deepcopy(board), "file_group": copy.deepcopy(doc["fileGroups"][board["activeFileGroupId"]])},
                    "toolchain": copy.deepcopy(toolchain), "library_proofs": copy.deepcopy(lib_proof),
-                   "offline": True, "allow_install": False, "test_only": True}
+                   "offline": True, "allow_install": False, "test_only": self.adapter.test_only}
         return request, provenance
 
     async def build_project(self, **arguments):
@@ -246,7 +256,11 @@ class BuildService:
             if action != "start" or set(arguments) != {"action", "project_id", "version", "board_id"}:
                 fail("invalid_argument", "build_project supports only start(project_id,version,board_id) and status(build_id)")
             if self.adapter is None or not self.adapter.ready:
-                fail("owner_integration_required", OWNER_BLOCKER)
+                fail(*getattr(self.adapter, "blocker", ("owner_integration_required", OWNER_BLOCKER)))
+            if not self.adapter.test_only:
+                from .offline_owner import BoundOfflineAdapter
+                if not isinstance(self.adapter, BoundOfflineAdapter):
+                    fail("owner_integration_required", "Production requires the sealed REST owner binding; arbitrary callbacks are forbidden")
             if not self._ensure_owner():
                 fail("owner_conflict", "A different service/process already owns build admission")
             request, provenance = self._preflight(arguments["project_id"], arguments["version"], arguments["board_id"])
@@ -268,8 +282,8 @@ class BuildService:
                     build_id = "b_" + uuid.uuid4().hex
                     job = {"build_id": build_id, "project_id": request["project_id"], "version": request["version"], "board_id": request["board_id"],
                            "request_key": request_key, "owner": self.owner, "state": "pending", "success": None, "error_kind": None,
-                           "test_only": True, "artifacts": [], "firmware_type": None, "diagnostics": [], "diagnostics_truncated": False, "log_truncated": False,
-                           "diagnostic_summary": "TEST DOUBLE; pending owner admission; no real compiler", "reservation_padding": " " * 8192,
+                           "test_only": self.adapter.test_only, "artifacts": [], "firmware_type": None, "diagnostics": [], "diagnostics_truncated": False, "log_truncated": False,
+                           "diagnostic_summary": "TEST DOUBLE; pending owner admission; no real compiler" if self.adapter.test_only else "Pending offline REST-owner admission", "reservation_padding": " " * 8192,
                            "provenance_sha256": hashlib.sha256(canonical(provenance)).hexdigest(), "toolchain_version": provenance["toolchain"]["version"]}
                     required = sum(len(canonical(v)) for v in (request, provenance, job)) + 2048
                     if self.store._usage(root) + required > self.store.max_storage_bytes:
@@ -332,14 +346,15 @@ class BuildService:
                     job["artifacts"].append(self.store._build_blob(root, build, job, "firmware", result["firmware"]))
                     job["firmware_type"] = result.get("firmware_type", "bin")
                 failure = result.get("error_kind", "compile_error")
-                if failure not in ("missing_library", "core_install_failed", "linker_error", "syntax_error", "compile_error", "unknown"):
+                if failure not in ("missing_library", "core_install_failed", "linker_error", "syntax_error", "compile_error", "unknown",
+                                   "offline_guard_unavailable", "core_unavailable", "dependency_unavailable", "toolchain_unknown", "unsupported"):
                     failure = "compile_error"
                 job.update(state="done" if result["success"] else "error", success=result["success"],
-                           error_kind=None if result["success"] else failure, diagnostic_summary="TEST DOUBLE result; no real compiler was executed")
+                           error_kind=None if result["success"] else failure, diagnostic_summary="TEST DOUBLE result; no real compiler was executed" if job["test_only"] else "Offline REST-owner compiler result")
             self._write(root, build, job)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             code = getattr(exc, "code", "storage_error")
-            job.update(state="error", success=False, error_kind=code, diagnostics=[], diagnostic_summary="TEST DOUBLE failed: " + code + "; existing files retained")
+            job.update(state="error", success=False, error_kind=code, diagnostics=[], diagnostic_summary=("TEST DOUBLE" if job["test_only"] else "Offline owner") + " failed: " + code + "; existing files retained")
             self._write(root, build, job)
 
     async def _run(self, build_id, request):
@@ -352,7 +367,7 @@ class BuildService:
                 job = self._job(root, build_id)
                 if job["owner"] != self.owner or job["state"] not in ("pending", "running"):
                     return
-                job.update(state="error", success=False, error_kind=getattr(exc, "code", "adapter_error"), diagnostic_summary="TEST DOUBLE adapter failed; no successful compilation inferred")
+                job.update(state="error", success=False, error_kind=getattr(exc, "code", "adapter_error"), diagnostic_summary=("TEST DOUBLE" if job["test_only"] else "Offline owner") + " adapter failed; no successful compilation inferred")
                 self._finish(root, build, job, None)
             return
         self._ensure_owner()
@@ -373,12 +388,13 @@ class BuildService:
         return result
 
     async def close(self):
-        # No production callbacks can run in 3c. Cancellation is for test-only
-        # jobs; future owner integration must shield/drain actual compile work.
-        for task in self.tasks.values():
-            if not task.done():
-                task.cancel()
+        if self.adapter is None or self.adapter.test_only:
+            for task in self.tasks.values():
+                if not task.done():
+                    task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        if self.adapter is not None and not self.adapter.test_only:
+            await self.adapter.owner.drain()
         if self.lease is not None:
             os.close(self.lease)
             self.lease = None

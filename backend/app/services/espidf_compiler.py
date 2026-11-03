@@ -5711,6 +5711,28 @@ class ESPIDFCompiler:
             result = attempt
         return original
 
+    def offline_capabilities(self):
+        return {'ready': False, 'blockers': ['idf_component_manager_fetch_and_heal', 'idf_replica_warmup', 'external_cmake_scripts_not_network_isolated']}
+
+    async def compile_offline(self, files, board_fqbn, *, offline_evidence=None, library_proofs=None,
+                              board_options=None, allowed_libraries=None, owner_id=None,
+                              progress_callback=None, spiffs_files=None, pure_idf=False, cpu_nice=None):
+        """Internal offline entry: explicitly block unaudited external configure.
+
+        The normal compile path can warm replicas, synchronize managed component
+        manifests, fetch during configure and heal/reconfigure downloaded trees.
+        No ordinary compile/fallback is called until that closure is isolated.
+        """
+        if not board_fqbn.startswith('esp32:'):
+            return {'success': False, 'error_kind': 'unsupported', 'stdout': '', 'stderr': ''}
+        if not offline_evidence or not offline_evidence.get('members'):
+            return {'success': False, 'error_kind': 'toolchain_unknown', 'error': 'Pinned local IDF evidence required', 'stdout': '', 'stderr': ''}
+        if allowed_libraries is None or set(allowed_libraries) - set(library_proofs or {}):
+            return {'success': False, 'error_kind': 'dependency_unavailable', 'error': 'Closed verified dependency scope required', 'stdout': '', 'stderr': ''}
+        return {'success': False, 'error_kind': 'offline_guard_unavailable',
+                'error': 'IDF/CMake managed downloads, replica warmup and configure healing are not offline-isolated; no compiler executed',
+                'stdout': '', 'stderr': ''}
+
     async def _compile_in_dir(
         self,
         project_dir: Path,
