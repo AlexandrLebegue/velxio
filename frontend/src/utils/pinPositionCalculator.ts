@@ -13,6 +13,45 @@
  */
 import { readPinInfo } from './readPinInfo';
 
+export interface PinDescriptor {
+  name: string;
+  x: number;
+  y: number;
+  description?: string;
+}
+
+/** Shared by wire geometry and agent validation: an alias must resolve to a real pad. */
+export function resolvePinDescriptor(
+  pins: readonly PinDescriptor[],
+  name: string,
+): PinDescriptor | undefined {
+  const exact = pins.find((pin) => pin.name === name);
+  if (exact) return exact;
+  const names: string[] = [];
+  if (!name.includes('.')) names.push(`${name}.1`);
+  if (/^GP\d+$/.test(name)) {
+    const gpio = Number(name.slice(2));
+    const described = pins.find((pin) => pin.description === `GPIO${gpio}`);
+    if (described) return described;
+  }
+  const numbered = name.match(/^(.+)\.\d+$/);
+  if (numbered) names.push(numbered[1]);
+  if (name === '3.3V') names.push('3V3', '3V3.1', '3V');
+  if (name === '3V3') names.push('3V3.1', '3.3V', '3V');
+  if (name === '5V') names.push('5V.1', 'VBUS', 'VIN');
+  if (name === 'GND2') names.push('GND.2');
+  const digital = name.match(/^D(\d+)$/);
+  if (digital) names.push(digital[1], `GP${digital[1]}`);
+  if (/^\d+$/.test(name)) names.push(`D${name}`, `GP${name}`);
+  if (name === '36') names.push('VP');
+  if (name === '39') names.push('VN');
+  for (const candidate of names) {
+    const pin = pins.find((item) => item.name === candidate);
+    if (pin) return pin;
+  }
+  return undefined;
+}
+
 /**
  * Calculates the absolute canvas position of a specific pin.
  *
@@ -63,44 +102,7 @@ export function calculatePinPosition(
   }
 
   // Find the specific pin
-  let pin = pinInfo.find((p: any) => p.name === pinName);
-  // Fallback: try numbered variant (e.g. GND → GND.1) for pins that have suffix variants
-  if (!pin && !pinName.includes('.')) {
-    pin = pinInfo.find((p: any) => p.name === `${pinName}.1`);
-  }
-  // Fallback: GP-prefix → match description field (e.g. 'GP15' → description 'GPIO15')
-  // Needed for Nano RP2040 Connect which uses D-prefix pin names but GPIO descriptions
-  if (!pin && pinName.startsWith('GP')) {
-    const gpioNum = parseInt(pinName.substring(2), 10);
-    if (!isNaN(gpioNum)) {
-      pin = pinInfo.find((p: any) => p.description === `GPIO${gpioNum}`);
-    }
-  }
-  // Generic alias fallbacks — every unresolved endpoint used to silently
-  // anchor at the board CORNER (0,0 of the element), which users read as a
-  // broken circuit. The names below are electrically identical spellings
-  // that boards/examples/saved projects disagree on (a 2026-08 audit found
-  // 15 gallery examples and 28 saved projects wired to a spelling their
-  // board element doesn't expose). Only consulted after exact + the two
-  // legacy fallbacks above miss, so no existing resolution changes.
-  if (!pin) {
-    const candidates: string[] = [];
-    const dot = pinName.match(/^(.+)\.\d+$/);
-    if (dot) candidates.push(dot[1]); // GND.1 -> GND (esp32 classic)
-    if (pinName === '3.3V') candidates.push('3V3', '3V3.1', '3V');
-    if (pinName === '3V3') candidates.push('3V3.1', '3.3V', '3V');
-    if (pinName === '5V') candidates.push('5V.1', 'VBUS', 'VIN');
-    if (pinName === 'GND2') candidates.push('GND.2');
-    const dNum = pinName.match(/^D(\d+)$/);
-    if (dNum) candidates.push(dNum[1], `GP${dNum[1]}`); // D13 -> 13 (esp32) / GP13 (pico)
-    if (/^\d+$/.test(pinName)) candidates.push(`D${pinName}`, `GP${pinName}`);
-    if (pinName === '36') candidates.push('VP'); // ESP32 devkit silk for GPIO36
-    if (pinName === '39') candidates.push('VN'); // ESP32 devkit silk for GPIO39
-    for (const c of candidates) {
-      pin = pinInfo.find((p: any) => p.name === c);
-      if (pin) break;
-    }
-  }
+  const pin = resolvePinDescriptor(pinInfo, pinName);
   if (!pin) {
     console.warn(`[pinPositionCalculator] Pin ${pinName} not found on component ${componentId}`);
     console.warn(

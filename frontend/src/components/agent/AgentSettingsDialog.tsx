@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { agentRequest } from '../../services/agentService';
 import type { AgentSettings } from '../../services/agentService';
 
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
+  const { t, i18n } = useTranslation();
   const [form, setForm] = useState<AgentSettings>({ ...settings, api_key: '' });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -34,14 +36,21 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
           payload,
         );
         setFailed(!result.ok);
-        setStatus(result.message);
+        setStatus(t(result.ok ? 'agent.testPassed' : 'agent.testMissingTools'));
       } else {
         onSaved(await agentRequest<AgentSettings>('/settings', 'PUT', payload));
         onClose();
       }
     } catch (error) {
       setFailed(true);
-      setStatus(error instanceof Error ? error.message : 'La connexion a échoué.');
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      setStatus(
+        code && i18n.exists(`agent.errors.${code}`)
+          ? t(`agent.errors.${code}`)
+          : error instanceof Error
+            ? error.message
+            : t('agent.errors.generic'),
+      );
     } finally {
       setBusy(false);
     }
@@ -57,18 +66,13 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
         onClick={(event) => event.stopPropagation()}
       >
         <header>
-          <h2 id="agent-settings-title">Connexion au modèle IA</h2>
-          <button type="button" onClick={onClose} aria-label="Fermer les paramètres">
+          <h2 id="agent-settings-title">{t('agent.settingsTitle')}</h2>
+          <button type="button" onClick={onClose} aria-label={t('agent.closeSettings')}>
             ×
           </button>
         </header>
-        <p>Le moteur OpenCode utilise cette connexion pour modifier et simuler le projet ouvert.</p>
-        {!settings.available && (
-          <p className="agent-error">
-            OpenCode est indisponible sur le serveur Velxio. Installer la version 1.19.3, puis
-            vérifier VELXIO_OPENCODE_BIN.
-          </p>
-        )}
+        <p>{t('agent.settingsBody')}</p>
+        {!settings.available && <p className="agent-error">{t('agent.unavailable')}</p>}
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -76,7 +80,7 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
           }}
         >
           <label>
-            URL de base du LLM
+            {t('agent.baseUrl')}
             <input
               type="url"
               required
@@ -85,30 +89,25 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
               onChange={(event) => setForm({ ...form, base_url: event.target.value })}
             />
           </label>
-          <small>
-            API compatible Chat Completions. L’adresse doit être accessible depuis le serveur Velxio
-            ; localhost désigne la machine du moteur, ou son conteneur.
-          </small>
+          <small>{t('agent.urlHelp')}</small>
           <label>
-            Identifiant du modèle
+            {t('agent.model')}
             <input
               required
               value={form.model}
-              placeholder="Nom exact du modèle servi"
+              placeholder={t('agent.modelPlaceholder')}
               onChange={(event) => setForm({ ...form, model: event.target.value })}
             />
           </label>
           <label>
-            Clé API <span>(facultative)</span>
+            <span>
+              {t('agent.apiKey')} ({t('agent.optional')})
+            </span>
             <input
               type="password"
               autoComplete="new-password"
               value={form.api_key}
-              placeholder={
-                settings.has_api_key
-                  ? 'Clé enregistrée ; laisser vide pour la conserver'
-                  : 'Aucune clé pour un serveur local sans authentification'
-              }
+              placeholder={settings.has_api_key ? t('agent.keySaved') : t('agent.keyEmpty')}
               onChange={(event) =>
                 setForm({ ...form, api_key: event.target.value, clear_api_key: false })
               }
@@ -121,13 +120,13 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
                 checked={!!form.clear_api_key}
                 onChange={(event) => setForm({ ...form, clear_api_key: event.target.checked })}
               />{' '}
-              Supprimer la clé enregistrée
+              {t('agent.removeKey')}
             </label>
           )}
           <details>
-            <summary>Limites du moteur</summary>
+            <summary>{t('agent.limits')}</summary>
             <label>
-              Étapes maximum
+              {t('agent.maxSteps')}
               <input
                 type="number"
                 min={1}
@@ -137,7 +136,7 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
               />
             </label>
             <label>
-              Durée maximum d’un tour (secondes)
+              {t('agent.timeout')}
               <input
                 type="number"
                 min={30}
@@ -156,10 +155,10 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
           )}
           <footer>
             <button type="button" disabled={busy || !form.model} onClick={() => void action(true)}>
-              {busy ? 'Connexion…' : 'Tester la connexion'}
+              {busy ? t('agent.testing') : t('agent.test')}
             </button>
             <button className="agent-primary" type="submit" disabled={busy}>
-              Enregistrer
+              {t('agent.save')}
             </button>
           </footer>
         </form>

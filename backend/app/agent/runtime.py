@@ -15,7 +15,7 @@ import httpx
 from app.mcp.compact.catalog import Catalog
 from .opencode import OpenCodeAdapter
 from .settings import AgentError, ConnectionSettings, SettingsStore, private_json
-from .workspace import Workspace
+from .workspace import Workspace, checked_document, project_revision
 
 
 @dataclass
@@ -26,6 +26,7 @@ class Session:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     messages: list = field(default_factory=list)
     events: list = field(default_factory=list)
+    turns: list = field(default_factory=list)
     sequence: int = 0
     task: Any = None
     adapter: Any = None
@@ -44,7 +45,7 @@ class Session:
         return self.task is not None and not self.task.done()
 
     def public(self):
-        return {"id": self.id, "revision": self.workspace.revision, "messages": self.messages, "busy": self.busy, "sequence": self.sequence}
+        return {"id": self.id, "revision": self.workspace.revision, "messages": self.messages, "turns": self.turns, "busy": self.busy, "sequence": self.sequence}
 
 
 class AgentRuntime:
@@ -60,16 +61,44 @@ class AgentRuntime:
         return os.environ.get("VELXIO_AGENT_ENABLED", "1") != "0" and bool(OpenCodeAdapter.executable())
 
     def save(self, session):
+        offset = max(0, len(session.messages) - 100)
         private_json(session.workspace.root / "session.json", {
             "id": session.id, "messages": session.messages[-100:], "sequence": session.sequence,
             "events": session.events[-150:], "browser_revision": session.browser_revision,
             "document": session.workspace.document,
             "requests": session.requests, "active_turn": session.active_turn,
+            "turns": [{**turn, "message_index": turn["message_index"] - offset} for turn in session.turns[-30:] if turn["message_index"] >= offset],
         })
 
     def emit(self, session, kind, payload):
         session.sequence += 1
-        event = {"event_id": session.sequence, "type": kind, "payload": payload}
+        turn_id = payload.get("turn_id") or session.active_turn
+        event = {"event_id": session.sequence, "type": kind, "turn_id": turn_id, "timestamp": int(time.time() * 1000), "payload": payload}
+        if kind == "turn.started":
+            session.turns.append({"id": turn_id, "message_index": len(session.messages) - 1, "status": "running", "phase": "starting", "started_at": event["timestamp"], "reasoning": {}, "steps": []})
+            session.turns = session.turns[-30:]
+        turn = next((item for item in reversed(session.turns) if item["id"] == turn_id), None)
+        if turn:
+            if kind == "turn.phase": turn["phase"] = payload["phase"]
+            elif kind in ("reasoning.delta", "part.updated") and (kind == "reasoning.delta" or payload.get("kind") == "reasoning"):
+                key = payload.get("part_id", "reasoning")
+                text = payload.get("text", "")
+                turn["reasoning"][key] = ((turn["reasoning"].get(key, "") + text) if kind.endswith("delta") else text)[-16000:]
+            elif kind == "tool.state":
+                step = next((item for item in turn["steps"] if item["id"] == payload["call_id"]), None)
+                if step is None:
+                    step = {"id": payload["call_id"], "started_at": event["timestamp"]}
+                    turn["steps"].append(step)
+                    turn["steps"] = turn["steps"][-100:]
+                step.update(payload)
+                if payload["status"] in ("completed", "error", "cancelled"):
+                    step["duration_ms"] = max(0, event["timestamp"] - step["started_at"])
+            elif kind in ("turn.completed", "turn.interrupted", "error"):
+                turn["status"] = {"turn.completed": "completed", "turn.interrupted": "cancelled", "error": "error"}[kind]
+                turn["finished_at"] = event["timestamp"]
+                for step in turn["steps"]:
+                    if step.get("status") in ("running", "pending"):
+                        step.update(status="cancelled" if kind != "error" else "error")
         session.events.append(event)
         session.events = session.events[-500:]
         session.changed.set()
@@ -97,6 +126,7 @@ class AgentRuntime:
             workspace = Workspace(path.parent, data["document"])
             session = Session(sid, owner, workspace, messages=data["messages"], sequence=data["sequence"], events=data.get("events", []), browser_revision=data.get("browser_revision", workspace.revision))
             session.requests = data.get("requests", {})
+            session.turns = data.get("turns", [])
             self.sessions[sid] = session
             if data.get("active_turn"):
                 self.emit(session, "turn.interrupted", {"turn_id": data["active_turn"], "reason": "server_restart"})
@@ -137,7 +167,7 @@ class AgentRuntime:
         if len(session.requests) > 100:
             session.requests.pop(next(iter(session.requests)))
         session.messages.append({"role": "user", "content": message})
-        self.emit(session, "turn.started", {"turn_id": turn_id})
+        self.emit(session, "turn.started", {"turn_id": turn_id, "message_index": len(session.messages) - 1})
         self.save(session)
         session.task = asyncio.create_task(self._turn(session, settings, message, callback_url, turn_id))
         return {"turn_id": turn_id}
@@ -158,6 +188,7 @@ class AgentRuntime:
                 ready, done = asyncio.Event(), asyncio.get_running_loop().create_future()
                 collector = asyncio.create_task(self._collect(session, ready, done))
                 await asyncio.wait_for(ready.wait(), 15)
+                self.emit(session, "turn.phase", {"phase": "working"})
                 system = (
                     "You are the Velxio electronics coding agent. Work only on the active project. "
                     "Use your existing file tools to edit source files in the group directories. "
@@ -219,18 +250,44 @@ class AgentRuntime:
             self.save(session)
 
     async def _collect(self, session, ready, done):
+        parts, pending, roles = {}, {}, {}
+        def delta(props):
+            part_id = props.get("partID", "")
+            part = parts.get(part_id)
+            if not part:
+                pending.setdefault(part_id, []).append(props)
+                if len(pending[part_id]) > 128: pending[part_id].pop(0)
+                return
+            if part.get("type") not in ("text", "reasoning"): return
+            text = props.get("delta", "")[:12000]
+            part["text"] = part.get("text", "") + text
+            self.emit(session, "reasoning.delta" if part["type"] == "reasoning" else "message.delta", {"text": text, "part_id": part_id, "message_id": part.get("messageID")})
         try:
             async for event in session.adapter.events(ready):
                 kind, props = event.get("type"), event.get("properties", {})
                 if props.get("sessionID") not in (None, session.adapter.session_id):
                     continue
+                if kind == "message.updated":
+                    info = props.get("info", {})
+                    if info.get("sessionID") == session.adapter.session_id: roles[info.get("id")] = info.get("role")
                 if kind == "message.part.delta" and props.get("field") == "text":
-                    self.emit(session, "message.delta", {"text": props.get("delta", "")[:12000]})
+                    delta(props)
                 elif kind == "message.part.updated":
                     part = props.get("part", {})
-                    if part.get("sessionID") == session.adapter.session_id and part.get("type") == "tool":
+                    if part.get("sessionID") != session.adapter.session_id: continue
+                    if roles.get(part.get("messageID")) == "user": continue
+                    part_id = part.get("id", "")
+                    parts[part_id] = part
+                    if part.get("type") in ("text", "reasoning"):
+                        self.emit(session, "part.updated", {"part_id": part_id, "message_id": part.get("messageID"), "kind": part["type"], "text": part.get("text", "")[:64000]})
+                        buffered = pending.pop(part_id, [])
+                        if not part.get("text"):
+                            for item in buffered: delta(item)
+                    if part.get("type") == "tool" and not part.get("tool", "").startswith("velxio_"):
                         state = part.get("state", {})
-                        self.emit(session, "tool.state", {"name": part.get("tool"), "status": state.get("status"), "title": state.get("title", part.get("tool"))})
+                        title = str(state.get("title", part.get("tool"))).replace(str(session.workspace.work) + "/", "")
+                        title = title.replace(str(session.workspace.work).lstrip("/") + "/", "")
+                        self.emit(session, "tool.state", {"call_id": part.get("callID") or part_id, "part_id": part_id, "message_id": part.get("messageID"), "name": part.get("tool"), "status": state.get("status", "pending"), "title": title[:300], "summary": str(state.get("error") or state.get("output") or "")[-2000:]})
                 elif kind == "session.error":
                     if not done.done():
                         done.set_exception(AgentError("model_error", "The model rejected the request or could not call its tools. Test the connection in AI settings."))
@@ -261,6 +318,21 @@ class AgentRuntime:
             session.pending.pop(command_id, None)
 
     async def call_tool(self, session, name, args):
+        call_id = secrets.token_hex(12)
+        self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "running"})
+        try:
+            result = await self._call_tool(session, name, args)
+            summary = {key: result[key] for key in ("state", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
+            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if result.get("ok") is False else "completed", "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
+            return result
+        except asyncio.CancelledError:
+            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "cancelled"})
+            raise
+        except Exception as exc:
+            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error", "summary": str(exc)[:1000]})
+            raise
+
+    async def _call_tool(self, session, name, args):
         try:
             if name in ("search_catalog", "get_reference"):
                 if self.catalog is None:
@@ -285,13 +357,49 @@ class AgentRuntime:
                 result = await self.browser_command(session, "create", document=value, revision=session.workspace.revision)
                 return {**result, "groups": session.workspace.groups}
             if name == "update_circuit":
-                session.workspace.update_circuit(args["changes"])
+                previous = session.workspace.document
+                candidate = session.workspace.circuit_candidate(args["changes"])
+                revision = project_revision(candidate)
+                validation = await self.browser_command(session, "validate_circuit", document=candidate, revision=revision)
+                if not validation.get("ok"):
+                    return validation
+                # The browser resolves aliases to real pad names for both the
+                # renderer and electrical engines before this becomes active.
+                candidate = checked_document(validation.get("document", candidate))
+                revision = project_revision(candidate)
+                if validation.get("revision") != revision:
+                    raise AgentError("revision_conflict", "Circuit normalization differs between server and editor")
+                session.workspace.commit(candidate)
+                try:
+                    result = await self.browser_command(session, "apply", document=candidate, revision=revision)
+                except (Exception, asyncio.CancelledError):
+                    session.workspace.commit(previous)
+                    raise
+                if not result.get("ok"):
+                    session.workspace.commit(previous)
+                    return result
                 self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
-                return {"ok": True, "revision": session.workspace.revision}
+                return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"])}
+            if name == "connect_pins":
+                value = session.workspace.capture()
+                value["wires"].append({"id": "wire-" + secrets.token_hex(6), "start": args["from"], "end": args["to"]})
+                return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": "/wires", "value": value["wires"]}]})
+            if name == "disconnect_wire":
+                wires = session.workspace.document["wires"]
+                if not any(wire["id"] == args["wire_id"] for wire in wires):
+                    raise AgentError("wire_unknown", "Wire not found")
+                return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": "/wires", "value": [wire for wire in wires if wire["id"] != args["wire_id"]]}]})
             if name == "run_project":
                 session.workspace.commit()
                 self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
                 return await self.browser_command(session, "run", document=session.workspace.document, revision=session.workspace.revision)
+            if name == "set_component_properties":
+                components = session.workspace.document["components"]
+                index = next((i for i, item in enumerate(components) if item["id"] == args["component_id"]), None)
+                if index is None:
+                    raise AgentError("component_unknown", "Component not found")
+                properties = {**components[index].get("properties", {}), **args["properties"]}
+                return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": f"/components/{index}/properties", "value": properties}]})
             if name == "observe_project":
                 return await self.browser_command(session, "observe", duration_ms=min(max(args.get("duration_ms", 500), 0), 5000))
             if name == "stop_project":

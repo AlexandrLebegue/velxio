@@ -10,8 +10,17 @@ from app.mcp.compact.projects import validate_document, patch
 from .settings import AgentError, private_json
 
 
+def normalize_document(document):
+    value = copy.deepcopy(document)
+    for wire in value.get("wires", []):
+        if isinstance(wire, dict):
+            wire.setdefault("color", "#00c853")
+            wire.setdefault("waypoints", [])
+    return value
+
+
 def project_revision(document):
-    value = copy.deepcopy({key: item for key, item in document.items() if key not in ("exportedAt", "name")})
+    value = normalize_document({key: item for key, item in document.items() if key not in ("exportedAt", "name")})
     for board in value.get("boards", []):
         board.pop("serialBaudRate", None)
     for wire in value.get("wires", []):
@@ -35,7 +44,7 @@ def checked_document(document):
         validate_document(document)
     except ValueError as exc:
         raise AgentError("invalid_project", str(exc)) from exc
-    return document
+    return normalize_document(document)
 
 
 class Workspace:
@@ -142,9 +151,12 @@ class Workspace:
         self.materialize()
 
     def update_circuit(self, changes):
+        self.commit(self.circuit_candidate(changes))
+
+    def circuit_candidate(self, changes):
         if not changes or len(changes) > 128 or any(not change.get("path", "").startswith(("/components/", "/wires/")) and change.get("path") not in ("/components", "/wires") for change in changes):
             raise AgentError("invalid_argument", "Circuit changes must address components or wires")
-        self.commit(patch(self.capture(), changes))
+        return checked_document(patch(self.capture(), changes))
 
     def describe(self):
         return {"revision": self.revision, "groups": self.groups, "document": self.document}

@@ -1,4 +1,4 @@
-import { keepWireShapes, useSimulatorStore } from '../store/useSimulatorStore';
+import { useSimulatorStore } from '../store/useSimulatorStore';
 import { useEditorStore } from '../store/useEditorStore';
 import { useCompileLogsStore } from '../store/useCompileLogsStore';
 import { buildVlxPayload } from '../utils/vlxFile';
@@ -6,6 +6,9 @@ import type { VlxPayload } from '../utils/vlxFile';
 import type { BoardInstance } from '../types/board';
 import { projectRevision } from './agentService';
 import { executeAgentProjectRun } from './projectExecution';
+import { AgentCircuitError, prepareAgentCircuit, settleAgentCircuit } from './agentCircuit';
+import { normalizeAgentDocument } from './agentDocument';
+import { flushElectricalResolve } from '../simulation/spice/electricalResolveHook';
 
 const completed = new Map<string, Record<string, unknown>>();
 const pending = new Map<string, Promise<Record<string, unknown>>>();
@@ -24,22 +27,44 @@ export async function applyAgentSnapshot(
     payload.boards.map(({ serialBaudRate: _baud, ...board }) => board);
   if (JSON.stringify(boardConfig(current)) !== JSON.stringify(boardConfig(document)))
     throw new Error('Board configuration changed. Start a new conversation for the new board.');
+  const candidate = await prepareAgentCircuit(document);
+  if ((await projectRevision()) !== expectedRevision)
+    throw new AgentCircuitError(
+      'revision_conflict',
+      'The project changed while validating connections. Your edits were preserved.',
+    );
   const sim = useSimulatorStore.getState();
+  const circuitChanged =
+    JSON.stringify(current.components) !== JSON.stringify(candidate.components) ||
+    JSON.stringify(normalizeAgentDocument(current).wires) !== JSON.stringify(candidate.wires);
   for (const board of sim.boards) {
     if (
       JSON.stringify(current.fileGroups[board.activeFileGroupId]) !==
-      JSON.stringify(document.fileGroups[board.activeFileGroupId])
+      JSON.stringify(candidate.fileGroups[board.activeFileGroupId])
     ) {
       if (board.running) sim.stopBoard(board.id);
       sim.updateBoard(board.id, { compiledProgram: null, compiledUf2: null });
     }
+    if (circuitChanged && board.running) sim.stopBoard(board.id);
   }
-  useEditorStore.getState().replaceFileGroups(document.fileGroups, document.folderGroups);
-  if (JSON.stringify(current.components) !== JSON.stringify(document.components))
-    sim.setComponents(document.components);
-  if (JSON.stringify(current.wires) !== JSON.stringify(document.wires)) {
-    sim.setWires(document.wires);
-    keepWireShapes(document.wires);
+  if (
+    JSON.stringify(current.fileGroups) !== JSON.stringify(candidate.fileGroups) ||
+    JSON.stringify(current.folderGroups) !== JSON.stringify(candidate.folderGroups)
+  )
+    useEditorStore.getState().replaceFileGroups(candidate.fileGroups, candidate.folderGroups);
+  if (circuitChanged) {
+    sim.applyCircuitState(candidate.components, candidate.wires);
+    try {
+      await settleAgentCircuit(candidate);
+      sim.recalculateAllWirePositions();
+      await flushElectricalResolve();
+    } catch (error) {
+      if ((await projectRevision()) === (await projectRevision(candidate))) {
+        sim.applyCircuitState(current.components, normalizeAgentDocument(current).wires);
+        useEditorStore.getState().replaceFileGroups(current.fileGroups, current.folderGroups);
+      }
+      throw error;
+    }
   }
   await new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -56,6 +81,27 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         message: 'Manual project edits were preserved. Stop and synchronize before continuing.',
       },
     };
+  if (command.action === 'validate_circuit') {
+    const candidate = await prepareAgentCircuit(command.document as VlxPayload);
+    return {
+      ok: true,
+      validated: true,
+      revision: await projectRevision(candidate),
+      connections: candidate.wires.length,
+      document: candidate,
+    };
+  }
+  if (command.action === 'apply') {
+    await applyAgentSnapshot(command.document as VlxPayload, expected);
+    const revision = await projectRevision();
+    return {
+      ok: revision === command.revision,
+      applied_revision: revision,
+      revision,
+      validated: true,
+      connections: (command.document as VlxPayload).wires.length,
+    };
+  }
   if (command.action === 'create') {
     const document = command.document as VlxPayload;
     const sim = useSimulatorStore.getState();
@@ -140,8 +186,9 @@ export function handleAgentBrowserCommand(
     .catch((error: unknown) => ({
       ok: false,
       error: {
-        code: 'editor_error',
+        code: error instanceof AgentCircuitError ? error.code : 'editor_error',
         message: error instanceof Error ? error.message : 'Editor action failed.',
+        ...(error instanceof AgentCircuitError ? { details: error.details } : {}),
       },
     }))
     .then((result) => {

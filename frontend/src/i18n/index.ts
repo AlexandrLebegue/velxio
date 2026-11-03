@@ -21,6 +21,7 @@ import LanguageDetector from "i18next-browser-languagedetector";
 
 import enCommon from "./locales/en/common.json";
 import enCommon2 from "./locales/en/common2.json";
+import enAgent from "./locales/en/agent.json";
 import enReleases from "./locales/en/releases.json";
 import enDocs from "./locales/en/docs.json";
 import enDocs2 from "./locales/en/docs2.json";
@@ -80,6 +81,7 @@ void i18n
       en: {
         common: {
           ...deepMerge(deepMerge(enCommon, enCommon2), enReleases),
+          agent: enAgent,
           seo: {
             ...enSeo.seo,
             ...enSeo2.seo,
@@ -167,6 +169,7 @@ export async function loadLocale(locale: Locale): Promise<void> {
     ),
     seo: seoBody,
     docs: { ...docs1Body, ...docs2Body },
+    agent: (await import(`./locales/${locale}/agent.json`).catch(() => ({ default: enAgent }))).default,
   };
   i18n.addResourceBundle(locale, "common", merged, true, true);
 }

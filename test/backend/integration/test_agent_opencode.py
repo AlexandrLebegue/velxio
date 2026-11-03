@@ -32,6 +32,24 @@ from app.agent.tools import create_tools
 class ModelFixture(BaseHTTPRequestHandler):
     calls = []
     failure = None
+    circuit = False
+    thinking = False
+
+    @staticmethod
+    def project_in(value):
+        if isinstance(value, str):
+            try: return ModelFixture.project_in(json.loads(value))
+            except (ValueError, RecursionError): return None
+        if isinstance(value, dict):
+            if "boards" in value and "wires" in value: return value
+            for item in value.values():
+                found = ModelFixture.project_in(item)
+                if found: return found
+        if isinstance(value, list):
+            for item in value:
+                found = ModelFixture.project_in(item)
+                if found: return found
+        return None
 
     def log_message(self, *args):
         pass
@@ -44,8 +62,21 @@ class ModelFixture(BaseHTTPRequestHandler):
             name, args = None, None
             if "velxio_connection_probe" in tools:
                 name, args = "velxio_connection_probe", {"ok": True}
+            elif self.circuit and "velxio_get_project" not in used:
+                name, args = "velxio_get_project", {}
             elif "write" not in used:
-                name, args = "write", {"filePath": "group-1/sketch.ino", "content": "void setup() { Serial.begin(9600); }\nvoid loop() { Serial.println(42); delay(100); }\n"}
+                code = "void setup() { Serial.begin(9600); pinMode(12, OUTPUT); }\nvoid loop() { digitalWrite(12, HIGH); Serial.println(42); delay(100); }\n" if self.circuit else "void setup() { Serial.begin(9600); }\nvoid loop() { Serial.println(42); delay(100); }\n"
+                name, args = "write", {"filePath": "group-1/sketch.ino", "content": code}
+            elif self.circuit and used.count("velxio_update_circuit") < 2:
+                project = self.project_in([item for item in body["messages"] if item.get("role") == "tool"])
+                if not project: raise AssertionError("Project tool output not found")
+                wires = project["wires"]
+                wires[0]["start"]["pinName"] = "__missing_pin__" if used.count("velxio_update_circuit") == 0 else "12"
+                wires[0].pop("color", None)
+                wires[0].pop("waypoints", None)
+                for endpoint in (wires[0]["start"], wires[0]["end"]):
+                    endpoint.pop("x", None); endpoint.pop("y", None)
+                name, args = "velxio_update_circuit", {"changes": [{"op": "set", "path": "/wires", "value": wires}]}
             else:
                 for suffix in ("run_project", "observe_project"):
                     candidates = [key for key in tools if key.endswith(suffix)]
@@ -55,13 +86,14 @@ class ModelFixture(BaseHTTPRequestHandler):
                         name, args = candidates[0], {}
                         break
             self.calls.append(name or "answer")
-            if len(self.calls) > 10:
+            if len(self.calls) > 16:
                 raise AssertionError("Unexpected model retry loop")
             delta = {"role": "assistant"}
             if name:
+                if self.thinking: delta["reasoning_content"] = "Inspect the project and verify its real connections."
                 delta["tool_calls"] = [{"index": 0, "id": "call_" + str(len(self.calls)), "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]
             else:
-                delta["content"] = "Le projet a été modifié et la sortie série observée : 42."
+                delta["content"] = ("<think>The GPIO connection and serial output have been checked.</think>" if self.thinking else "") + "The simulation is running. Serial output contains 42."
             chunks = [{"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "probe", "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
                       {"id": "fixture", "object": "chat.completion.chunk", "created": 1, "model": "probe", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if name else "stop"}], "usage": {"prompt_tokens": 20, "completion_tokens": 20, "total_tokens": 40}}]
             data = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
@@ -162,6 +194,8 @@ class OpenCodeIntegration(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     if "--serve-model" in sys.argv:
+        ModelFixture.circuit = "--circuit" in sys.argv
+        ModelFixture.thinking = "--thinking" in sys.argv
         server = ThreadingHTTPServer(("127.0.0.1", 0), ModelFixture)
         print(f"AGENT_TEST_MODEL_URL=http://127.0.0.1:{server.server_port}/v1", flush=True)
         try:

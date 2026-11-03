@@ -11,6 +11,14 @@
  */
 
 let hook: (() => void) | null = null;
+let flushHook: (() => Promise<void>) | null = null;
+
+export function setElectricalFlushHook(fn: (() => Promise<void>) | null): void {
+  flushHook = fn;
+}
+export async function flushElectricalResolve(): Promise<void> {
+  await flushHook?.();
+}
 
 export function setElectricalResolveHook(fn: (() => void) | null): void {
   hook = fn;

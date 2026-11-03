@@ -389,6 +389,12 @@ export class CircuitSimulationService {
     return this.chain;
   }
 
+  /** Wait for the requested topology rebuild and any solve already queued. */
+  async flush(): Promise<void> {
+    await this.tick();
+    await this.chain;
+  }
+
   /** Full rebuild + solve of the deck, coalesced: ticks asked for while one
    *  runs fold into a single one after it. */
   async tick(): Promise<void> {

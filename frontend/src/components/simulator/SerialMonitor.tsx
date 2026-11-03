@@ -282,7 +282,7 @@ export const SerialMonitor: React.FC = () => {
           <PiTerminal key={activeBoard.id} boardId={activeBoard.id} />
         </div>
       ) : (
-        <pre ref={outputRef} style={styles.output}>
+        <pre data-testid="serial-monitor-output" ref={outputRef} style={styles.output}>
           {activeBoard?.serialOutput
             ? (() => {
                 // Firmwares and the Pi's Linux console emit ANSI escapes the
