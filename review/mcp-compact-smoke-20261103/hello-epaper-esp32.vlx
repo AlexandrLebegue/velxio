@@ -1,0 +1,182 @@
+{
+  "format": "velxio-project",
+  "version": 1,
+  "exportedAt": "2026-11-03T00:00:00.000Z",
+  "name": "Hello World - ESP32 e-paper 2.9 inch",
+  "boards": [
+    {
+      "id": "esp32",
+      "name": "ESP32 Hello e-paper",
+      "boardKind": "esp32",
+      "x": 120,
+      "y": 80,
+      "activeFileGroupId": "group-hello-epaper-esp32",
+      "languageMode": "arduino",
+      "serialBaudRate": 115200,
+      "libraries": [
+        "GxEPD2",
+        "Adafruit GFX Library",
+        "Adafruit BusIO"
+      ]
+    }
+  ],
+  "fileGroups": {
+    "group-hello-epaper-esp32": [
+      {
+        "name": "sketch.ino",
+        "content": "// ESP32 + catalogue panel epaper-2in9-bw (296x128 SSD1680).\n// Driver and init follow frontend/src/data/examples-displays-epaper.ts,\n// weatherEsp29. Display output still requires the manager's real build/run.\n// SPI: SCK=18, MOSI=23; CS=5, DC=17, RST=16, BUSY=4.\n#include <Arduino.h>\n#include <SPI.h>\n#include <Adafruit_GFX.h>\n#include <GxEPD2_BW.h>\n\nGxEPD2_BW<GxEPD2_290_T94, GxEPD2_290_T94::HEIGHT> display(\n  GxEPD2_290_T94(/*CS=*/5, /*DC=*/17, /*RST=*/16, /*BUSY=*/4));\n\nvoid setup() {\n  Serial.begin(115200);\n  SPI.begin(/*SCK=*/18, /*MISO unused=*/-1, /*MOSI=*/23, /*SS=*/5);\n  display.init(115200, true, 50, false);\n  display.setRotation(1);\n  display.setTextColor(GxEPD_BLACK);\n  display.setTextSize(2);\n  display.setFullWindow();\n  display.firstPage();\n  do {\n    display.fillScreen(GxEPD_WHITE);\n    display.setCursor(20, 40);\n    display.print(\"Hello World\");\n  } while (display.nextPage());\n  display.hibernate();\n  Serial.println(\"Hello World frame sent\");\n}\n\nvoid loop() {\n  delay(1000);\n}\n"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "epd-290",
+      "metadataId": "epaper-2in9-bw",
+      "x": 460,
+      "y": 80,
+      "properties": {
+        "panelKind": "epaper-2in9-bw",
+        "refreshMs": 50
+      }
+    }
+  ],
+  "wires": [
+    {
+      "id": "wire-cs",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "5",
+        "x": 254,
+        "y": 198
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "CS",
+        "x": 637,
+        "y": 260
+      },
+      "color": "#ffaa00",
+      "waypoints": []
+    },
+    {
+      "id": "wire-dc",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "17",
+        "x": 254,
+        "y": 211
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "DC",
+        "x": 651,
+        "y": 260
+      },
+      "color": "#aa66ff",
+      "waypoints": []
+    },
+    {
+      "id": "wire-rst",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "16",
+        "x": 254,
+        "y": 223
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "RST",
+        "x": 665,
+        "y": 260
+      },
+      "color": "#ff4444",
+      "waypoints": []
+    },
+    {
+      "id": "wire-busy",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "4",
+        "x": 254,
+        "y": 236
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "BUSY",
+        "x": 679,
+        "y": 260
+      },
+      "color": "#22cc22",
+      "waypoints": []
+    },
+    {
+      "id": "wire-sdi",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "23",
+        "x": 254,
+        "y": 109
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "SDI",
+        "x": 623,
+        "y": 260
+      },
+      "color": "#22aaff",
+      "waypoints": []
+    },
+    {
+      "id": "wire-sck",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "18",
+        "x": 254,
+        "y": 185
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "SCK",
+        "x": 609,
+        "y": 260
+      },
+      "color": "#ffdd33",
+      "waypoints": []
+    },
+    {
+      "id": "wire-vcc",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "3V3",
+        "x": 254,
+        "y": 287
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "VCC",
+        "x": 595,
+        "y": 260
+      },
+      "color": "#ff4444",
+      "waypoints": []
+    },
+    {
+      "id": "wire-gnd",
+      "start": {
+        "componentId": "esp32",
+        "pinName": "GND",
+        "x": 126,
+        "y": 274
+      },
+      "end": {
+        "componentId": "epd-290",
+        "pinName": "GND",
+        "x": 581,
+        "y": 260
+      },
+      "color": "#000000",
+      "waypoints": []
+    }
+  ],
+  "activeBoardId": "esp32"
+}
