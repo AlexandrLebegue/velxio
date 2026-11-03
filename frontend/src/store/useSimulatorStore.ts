@@ -1745,6 +1745,7 @@ interface SimulatorState {
   updateComponentState: (id: string, state: boolean) => void;
   handleComponentEvent: (componentId: string, eventName: string, data?: unknown) => void;
   setComponents: (components: Component[]) => void;
+  applyCircuitState: (components: Component[], wires: Wire[]) => void;
   /**
    * Bumped on every BULK canvas replacement (setComponents / setWires —
    * project load, example load, .vlx/wokwi import, clear). Lets observers
@@ -4349,6 +4350,18 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
       liveSensorProperties.clear();
       set((state) => ({
         components,
+        history: [],
+        historyIndex: -1,
+        hydrationSeq: state.hydrationSeq + 1,
+      }));
+    },
+
+    applyCircuitState: (components, wires) => {
+      liveSensorProperties.clear();
+      keepWireShapes(wires);
+      set((state) => ({
+        components,
+        wires,
         history: [],
         historyIndex: -1,
         hydrationSeq: state.hydrationSeq + 1,

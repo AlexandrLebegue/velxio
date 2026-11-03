@@ -73,6 +73,7 @@ const resizeHandleStyle: React.CSSProperties = {
 };
 
 export const EditorPage: React.FC = () => {
+  const [agentDockWidth, setAgentDockWidth] = useState(0);
   const { t } = useTranslation();
   useSEO({
     title: 'Multi-Board Simulator Editor — Arduino, ESP32, RP2040, RISC-V | Velxio',
@@ -577,7 +578,11 @@ export const EditorPage: React.FC = () => {
   ) : undefined;
 
   return (
-    <div className="app">
+    <div
+      className="app"
+      data-connectable-agent-open={agentDockWidth ? 'true' : undefined}
+      style={agentDockWidth ? { '--connectable-agent-width': `${agentDockWidth}px` } as React.CSSProperties : undefined}
+    >
       <AppHeader
         editorMenu={!isMobile ? <EditorMenuBar /> : undefined}
         editorToolbar={unifiedToolbar}
@@ -837,7 +842,7 @@ export const EditorPage: React.FC = () => {
       {/* Slot reserved for the private pro overlay (e.g. agent chat panel).
           Self-hosted builds without an overlay see nothing here. */}
       <div data-velxio-slot="agent-chat" />
-      {(!import.meta.env.VITE_PRO_BUILD || import.meta.env.VITE_CONNECTABLE_AGENT === 'true') && <AgentPanel />}
+      {(!import.meta.env.VITE_PRO_BUILD || import.meta.env.VITE_CONNECTABLE_AGENT === 'true') && <AgentPanel onDockChange={setAgentDockWidth} />}
     </div>
   );
 };

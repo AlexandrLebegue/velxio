@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
 import { MessageSquare, Settings, X, Send, Square, Download, Plus } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useSimulatorStore } from '../../store/useSimulatorStore';
@@ -21,6 +21,8 @@ import type { VlxPayload } from '../../utils/vlxFile';
 import { AgentSettingsDialog } from './AgentSettingsDialog';
 import { cancelAgentProjectRun } from '../../services/projectExecution';
 import { generateUUID } from '../../utils/uuid';
+import { reduceAgentEvent } from '../../services/agentEvents';
+import { AgentMessageBody, AgentTimeline } from './AgentTimeline';
 import './AgentPanel.css';
 
 const defaults: AgentSettings = {
@@ -29,10 +31,19 @@ const defaults: AgentSettings = {
   max_steps: 20,
   timeout_seconds: 300,
 };
-const errorText = (error: unknown) =>
-  error instanceof Error ? error.message : 'L’agent a rencontré une erreur.';
-
-export function AgentPanel() {
+export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) => void } = {}) {
+  const { t, i18n } = useTranslation();
+  const errorText = useCallback(
+    (error: unknown) => {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      return code && i18n.exists(`agent.errors.${code}`)
+        ? t(`agent.errors.${code}`)
+        : error instanceof Error
+          ? error.message
+          : t('agent.errors.generic');
+    },
+    [t, i18n],
+  );
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState(defaults);
@@ -41,7 +52,7 @@ export function AgentPanel() {
   const [connected, setConnected] = useState(false);
   const [message, setMessage] = useState('');
   const [partial, setPartial] = useState('');
-  const [activity, setActivity] = useState('');
+  const partials = useRef<Record<string, string>>({});
   const [error, setError] = useState('');
   const [width, setWidth] = useState(390);
   const savedProjectId = useProjectStore((state) => state.currentProject?.id);
@@ -52,6 +63,7 @@ export function AgentPanel() {
   const revision = useRef('');
   const seen = useRef(0);
   const end = useRef<HTMLDivElement>(null);
+  const autoScroll = useRef(true);
   const handler = useRef<(event: AgentEvent) => void>(() => {});
   const sessionRef = useRef(session);
   useEffect(() => {
@@ -59,20 +71,21 @@ export function AgentPanel() {
   }, [session]);
 
   useEffect(() => {
-    const app = document.querySelector<HTMLElement>('.app');
-    if (!app || !open) return;
-    app.dataset.connectableAgentOpen = 'true';
-    app.style.setProperty('--connectable-agent-width', `${width + 24}px`);
-    return () => {
-      delete app.dataset.connectableAgentOpen;
-      app.style.removeProperty('--connectable-agent-width');
-    };
-  }, [open, width]);
+    onDockChange?.(open ? width : 0);
+    return () => onDockChange?.(0);
+  }, [open, width, onDockChange]);
 
   const refresh = useCallback(async (id: string, apply: boolean) => {
     const updated = await agentRequest<AgentSession>(`/sessions/${id}`);
     if (sessionRef.current?.id !== id) return;
     setSession(updated);
+    // A terminal event can arrive while the server task is still cleaning up.
+    // Its persisted turn status is already final at that point.
+    setBusy(updated.busy && (updated.turns?.at(-1)?.status ?? 'running') === 'running');
+    if (!updated.busy || updated.messages.at(-1)?.role === 'assistant') {
+      setPartial('');
+      partials.current = {};
+    }
     revision.current = updated.revision;
     if (apply) {
       const workspace = await agentRequest<{ document: VlxPayload; revision: string }>(
@@ -108,7 +121,7 @@ export function AgentPanel() {
     return () => {
       alive = false;
     };
-  }, [open]);
+  }, [open, errorText]);
 
   useEffect(() => {
     // A different editor project must detach the previous server conversation.
@@ -116,6 +129,7 @@ export function AgentPanel() {
     setSession(null);
     setBusy(false);
     setPartial('');
+    partials.current = {};
     seen.current = 0;
     const id = sessionStorage.getItem(`velxio-agent:${projectKey}`);
     if (!id) return;
@@ -123,7 +137,17 @@ export function AgentPanel() {
     void agentRequest<AgentSession>(`/sessions/${id}`)
       .then(async (value) => {
         if (!alive) return;
-        const local = await projectRevision();
+        let local = await projectRevision();
+        const baseline = sessionStorage.getItem(`velxio-agent-base:${projectKey}`);
+        if (!value.busy && baseline === local && local !== value.revision) {
+          const workspace = await agentRequest<{ document: VlxPayload }>(
+            `/sessions/${id}/workspace`,
+          );
+          if (!alive) return;
+          await applyAgentSnapshot(workspace.document, local);
+          local = await projectRevision();
+        }
+        if (!alive) return;
         browserRevision.current = local;
         revision.current = value.revision;
         seen.current = value.sequence;
@@ -144,16 +168,22 @@ export function AgentPanel() {
       seen.current = event.event_id;
       const current = sessionRef.current;
       if (!current) return;
-      if (event.type === 'message.delta')
-        setPartial((value) => value + String(event.payload.text ?? ''));
-      if (event.type === 'tool.state')
-        setActivity(`${event.payload.title ?? event.payload.name} · ${event.payload.status ?? ''}`);
+      setSession((value) =>
+        value ? { ...value, turns: reduceAgentEvent(value.turns ?? [], event) } : value,
+      );
+      if (
+        event.type === 'message.delta' ||
+        (event.type === 'part.updated' && event.payload.kind === 'text')
+      ) {
+        const id = String(event.payload.part_id ?? 'text');
+        partials.current[id] =
+          event.type === 'message.delta'
+            ? (partials.current[id] ?? '') + String(event.payload.text ?? '')
+            : String(event.payload.text ?? '');
+        setPartial(Object.values(partials.current).join('\n\n'));
+      }
+      if (event.type === 'message.completed') setPartial(String(event.payload.text ?? ''));
       if (event.type === 'browser.command') {
-        setActivity(
-          event.payload.action === 'run'
-            ? 'Compilation et lancement dans Velxio…'
-            : 'Observation de la simulation…',
-        );
         void handleAgentBrowserCommand(event.payload)
           .then(async (result) => {
             if (typeof result.applied_revision === 'string')
@@ -172,14 +202,18 @@ export function AgentPanel() {
         event.type === 'error'
       ) {
         setBusy(false);
-        setActivity('');
-        setPartial('');
         if (event.type === 'error')
-          setError(String(event.payload.message ?? 'Connexion interrompue.'));
+          setError(
+            errorText(
+              Object.assign(new Error(String(event.payload.message ?? t('agent.errors.generic'))), {
+                code: event.payload.code,
+              }),
+            ),
+          );
         void refresh(current.id, true).catch((cause: unknown) => setError(errorText(cause)));
       }
     };
-  }, [refresh]);
+  }, [refresh, errorText, t]);
 
   useEffect(() => {
     if (!session?.id) return;
@@ -196,16 +230,19 @@ export function AgentPanel() {
         setConnected(value);
       },
     );
-  }, [session?.id, refresh]);
+  }, [session?.id, refresh, errorText]);
 
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'nearest' });
-  }, [session?.messages, partial, activity]);
+    if (autoScroll.current) end.current?.scrollIntoView({ block: 'nearest' });
+  }, [session?.messages, session?.turns, partial]);
 
   async function send() {
     if (!message.trim() || busy) return;
     setError('');
     setBusy(true);
+    autoScroll.current = true;
+    partials.current = {};
+    setPartial('');
     try {
       let current = session;
       const document = snapshotForAgent();
@@ -215,14 +252,12 @@ export function AgentPanel() {
         current = await agentRequest<AgentSession>('/sessions', 'POST', { document });
         setSession(current);
         sessionStorage.setItem(`velxio-agent:${projectKey}`, current.id);
+        sessionStorage.setItem(`velxio-agent-base:${projectKey}`, local);
         seen.current = 0;
         // The browser event stream must be connected before the agent can run.
         for (let attempt = 0; attempt < 100 && !connectionReady.current; attempt++)
           await new Promise((resolve) => setTimeout(resolve, 50));
-        if (!connectionReady.current)
-          throw new Error(
-            'La connexion avec l’éditeur n’est pas prête. Réessayez dans quelques secondes.',
-          );
+        if (!connectionReady.current) throw new Error(t('agent.errors.editorNotReady'));
       } else {
         current = await agentRequest<AgentSession>(`/sessions/${current.id}/workspace`, 'PATCH', {
           document,
@@ -236,7 +271,12 @@ export function AgentPanel() {
         message: text,
         request_id: generateUUID(),
       });
-      setSession({ ...current, messages: [...current.messages, { role: 'user', content: text }] });
+      const accepted = current;
+      setSession((previous) => ({
+        ...accepted,
+        turns: previous?.turns ?? accepted.turns,
+        messages: [...accepted.messages, { role: 'user', content: text }],
+      }));
       setMessage('');
     } catch (cause) {
       setError(errorText(cause));
@@ -252,7 +292,6 @@ export function AgentPanel() {
       const sim = useSimulatorStore.getState();
       sim.boards.filter((board) => board.running).forEach((board) => sim.stopBoard(board.id));
       setBusy(false);
-      setActivity('');
     } catch (cause) {
       setError(errorText(cause));
     }
@@ -281,15 +320,15 @@ export function AgentPanel() {
     <>
       {!open && (
         <button className="agent-launcher" type="button" onClick={() => setOpen(true)}>
-          <MessageSquare size={17} /> Agent IA
+          <MessageSquare size={17} /> {t('agent.title')}
         </button>
       )}
       {open && (
-        <aside className="agent-panel" style={{ width }} aria-label="Agent IA Velxio">
+        <aside className="agent-panel" style={{ width }} aria-label={t('agent.title')}>
           <div
             className="agent-resizer"
             role="separator"
-            aria-label="Largeur du panneau"
+            aria-label={t('agent.resize')}
             aria-orientation="vertical"
             onPointerDown={(event) => {
               const element = event.currentTarget;
@@ -306,16 +345,16 @@ export function AgentPanel() {
           />
           <header className="agent-panel-header">
             <div>
-              <strong>Agent IA</strong>
+              <strong>{t('agent.title')}</strong>
               <small>
-                {settings.model || 'Connecter un modèle'}{' '}
-                {session && (connected ? '· connecté' : '· reconnexion…')}
+                {settings.model || t('agent.configure')}{' '}
+                {session && `· ${t(connected ? 'agent.connected' : 'agent.reconnecting')}`}
               </small>
             </div>
             <div className="agent-buttons">
               <button
                 type="button"
-                title="Nouvelle conversation"
+                title={t('agent.newConversation')}
                 disabled={busy}
                 onClick={() => {
                   setSession(null);
@@ -328,60 +367,61 @@ export function AgentPanel() {
               </button>
               <button
                 type="button"
-                title="Télécharger le projet de l’agent"
+                title={t('agent.download')}
                 disabled={!session || busy}
                 onClick={() => void download()}
               >
                 <Download size={16} />
               </button>
-              <button type="button" title="Paramètres IA" onClick={() => setSettingsOpen(true)}>
+              <button
+                type="button"
+                title={t('agent.settings')}
+                onClick={() => setSettingsOpen(true)}
+              >
                 <Settings size={16} />
               </button>
-              <button type="button" title="Réduire le panneau" onClick={() => setOpen(false)}>
+              <button type="button" title={t('agent.minimize')} onClick={() => setOpen(false)}>
                 <X size={17} />
               </button>
             </div>
           </header>
-          <div className="agent-messages" aria-live="polite">
+          <div
+            className="agent-messages"
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              autoScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+            }}
+          >
             {!session?.messages.length && (
               <div className="agent-welcome">
                 <MessageSquare size={28} />
-                <h3>Du code à la simulation</h3>
-                <p>
-                  Décris ce que tu veux construire. L’agent travaille sur le projet ouvert et peut
-                  lancer les cartes AVR puis lire la sortie série.
-                </p>
+                <h3>{t('agent.welcomeTitle')}</h3>
+                <p>{t('agent.welcomeBody')}</p>
                 <button type="button" onClick={() => setSettingsOpen(true)}>
-                  Configurer mon modèle
+                  {t('agent.configure')}
                 </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setMessage(
-                      'Fais clignoter la LED et affiche son état sur le port série. Lance la simulation et vérifie la sortie.',
-                    )
-                  }
-                >
-                  Essayer avec une LED
+                <button type="button" onClick={() => setMessage(t('agent.examplePrompt'))}>
+                  {t('agent.example')}
                 </button>
               </div>
             )}
             {session?.messages.map((item, index) => (
-              <article key={index} className={`agent-message agent-message--${item.role}`}>
-                <small>{item.role === 'user' ? 'Vous' : 'Agent'}</small>
-                <ReactMarkdown>{item.content}</ReactMarkdown>
-              </article>
+              <Fragment key={index}>
+                <article className={`agent-message agent-message--${item.role}`}>
+                  <small>{t(item.role === 'user' ? 'agent.you' : 'agent.assistant')}</small>
+                  <AgentMessageBody text={item.content} />
+                </article>
+                {item.role === 'user' &&
+                  session.turns
+                    ?.filter((turn) => turn.message_index === index)
+                    .map((turn) => <AgentTimeline key={turn.id} turn={turn} />)}
+              </Fragment>
             ))}
             {partial && (
               <article className="agent-message agent-message--assistant">
-                <small>Agent</small>
-                <ReactMarkdown>{partial}</ReactMarkdown>
+                <small>{t('agent.assistant')}</small>
+                <AgentMessageBody text={partial} />
               </article>
-            )}
-            {activity && (
-              <p className="agent-activity" role="status">
-                {activity}
-              </p>
             )}
             {error && (
               <p className="agent-error" role="alert">
@@ -400,8 +440,8 @@ export function AgentPanel() {
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="Décris ton projet ou la modification…"
-              aria-label="Message à l’agent"
+              placeholder={t('agent.placeholder')}
+              aria-label={t('agent.messageLabel')}
               disabled={busy}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -411,10 +451,10 @@ export function AgentPanel() {
               }}
             />
             <footer>
-              <small>{busy ? 'L’agent travaille sur ce projet' : 'OpenCode · votre modèle'}</small>
+              <small>{busy ? t('agent.working') : t('agent.yourModel')}</small>
               {busy ? (
                 <button type="button" onClick={() => void stop()}>
-                  <Square size={14} /> Arrêter
+                  <Square size={14} /> {t('agent.stop')}
                 </button>
               ) : (
                 <button
@@ -422,7 +462,7 @@ export function AgentPanel() {
                   type="submit"
                   disabled={!message.trim() || !settings.model || !settings.available}
                 >
-                  <Send size={14} /> Envoyer
+                  <Send size={14} /> {t('agent.send')}
                 </button>
               )}
             </footer>

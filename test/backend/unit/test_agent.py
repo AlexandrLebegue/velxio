@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 import httpx
 from fastapi import FastAPI
@@ -67,6 +68,15 @@ class WorkspaceTests(unittest.TestCase):
         value["exportedAt"] = "2026-11-03T10:00:00Z"
         value["name"] = "Renamed"
         self.assertEqual(before, project_revision(value))
+
+    def test_wire_defaults_are_normalized_before_hashing(self):
+        value = document()
+        value["wires"] = [{"id": "w", "start": {"componentId": "uno", "pinName": "13"}, "end": {"componentId": "uno", "pinName": "12"}}]
+        before = project_revision(value)
+        value["wires"][0].update(color="#00c853", waypoints=[])
+        self.assertEqual(before, project_revision(value))
+        value["wires"][0]["waypoints"] = [{"x": 3, "y": 5}]
+        self.assertNotEqual(before, project_revision(value))
 
     def test_runtime_baud_and_wire_geometry_do_not_create_false_conflicts(self):
         value = document()
@@ -148,6 +158,95 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         response = await self.runtime.call_tool(session, "search_catalog", {"query": "led"})
         self.assertTrue(response["ok"])
         self.assertTrue(response["items"])
+
+    async def test_reasoning_parts_never_enter_answer_stream_and_early_deltas_are_buffered(self):
+        session = self.runtime.create("owner", document())
+        session.active_turn = "turn"
+        self.runtime.emit(session, "turn.started", {"turn_id": "turn", "message_index": 0})
+        async def events(ready):
+            ready.set()
+            for item in [
+                {"type": "message.part.delta", "properties": {"sessionID": "s", "partID": "r", "field": "text", "delta": "Reasoning only"}},
+                {"type": "message.part.updated", "properties": {"part": {"id": "r", "sessionID": "s", "type": "reasoning", "text": ""}}},
+                {"type": "message.part.updated", "properties": {"part": {"id": "a", "sessionID": "s", "type": "text", "text": ""}}},
+                {"type": "message.part.delta", "properties": {"sessionID": "s", "partID": "a", "field": "text", "delta": "Answer"}},
+            ]: yield item
+        session.adapter = SimpleNamespace(session_id="s", events=events)
+        await self.runtime._collect(session, asyncio.Event(), asyncio.get_running_loop().create_future())
+        session.adapter = None
+        self.assertEqual([e["payload"]["text"] for e in session.events if e["type"] == "message.delta"], ["Answer"])
+        self.assertEqual(session.turns[0]["reasoning"]["r"], "Reasoning only")
+        self.assertTrue(all(e["turn_id"] == "turn" for e in session.events))
+
+    async def test_invalid_circuit_is_not_committed_and_action_failure_is_retained(self):
+        session = self.runtime.create("owner", document())
+        session.messages.append({"role": "user", "content": "Connect the pins"})
+        session.active_turn = "turn"
+        self.runtime.emit(session, "turn.started", {"turn_id": "turn", "message_index": 0})
+        session.browser_seen = time.monotonic()
+        initial = session.workspace.revision
+        operation = asyncio.create_task(self.runtime.call_tool(session, "connect_pins", {"from": {"componentId": "uno", "pinName": "typo"}, "to": {"componentId": "uno", "pinName": "12"}}))
+        await asyncio.sleep(0)
+        command = session.events[-1]["payload"]
+        self.assertEqual(command["action"], "validate_circuit")
+        session.pending[command["command_id"]].set_result({"ok": False, "error": {"code": "pin_invalid", "message": "Unknown pin typo"}})
+        self.assertFalse((await operation)["ok"])
+        self.assertEqual(session.workspace.revision, initial)
+        self.assertEqual(session.workspace.document["wires"], [])
+        self.assertEqual(session.turns[0]["steps"][0]["status"], "error")
+        self.runtime.emit(session, "turn.completed", {"turn_id": "turn"})
+        session.active_turn = ""
+        self.runtime.save(session)
+        restored = AgentRuntime(self.directory.name).get("owner", session.id)
+        self.assertEqual(restored.turns[0]["steps"][0]["status"], "error")
+
+    async def test_connection_is_committed_only_after_validation_then_applied(self):
+        session = self.runtime.create("owner", document())
+        session.browser_seen = time.monotonic()
+        operation = asyncio.create_task(self.runtime.call_tool(session, "connect_pins", {"from": {"componentId": "uno", "pinName": "13"}, "to": {"componentId": "uno", "pinName": "12"}}))
+        await asyncio.sleep(0)
+        validate = session.events[-1]["payload"]
+        self.assertEqual(session.workspace.document["wires"], [])
+        session.pending[validate["command_id"]].set_result({"ok": True, "revision": validate["revision"]})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        apply = next(e["payload"] for e in reversed(session.events) if e["type"] == "browser.command" and e["payload"]["action"] == "apply")
+        session.pending[apply["command_id"]].set_result({"ok": True, "applied_revision": apply["revision"]})
+        result = await operation
+        self.assertTrue(result["validated"] and result["applied"])
+        self.assertEqual(len(session.workspace.document["wires"]), 1)
+
+    async def test_browser_pin_resolution_is_saved_before_apply_and_rolled_back_on_disconnect(self):
+        from app.agent.workspace import project_revision
+        session = self.runtime.create("owner", document())
+        session.browser_seen = time.monotonic()
+        operation = asyncio.create_task(self.runtime.call_tool(session, "connect_pins", {"from": {"componentId": "uno", "pinName": "D13"}, "to": {"componentId": "uno", "pinName": "12"}}))
+        await asyncio.sleep(0)
+        validate = session.events[-1]["payload"]
+        resolved = validate["document"]
+        resolved["wires"][0]["start"]["pinName"] = "13"
+        session.pending[validate["command_id"]].set_result({"ok": True, "document": resolved, "revision": project_revision(resolved)})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        apply = session.events[-1]["payload"]
+        self.assertEqual(apply["action"], "apply")
+        self.assertEqual(session.workspace.document["wires"][0]["start"]["pinName"], "13")
+        session.pending[apply["command_id"]].set_exception(AgentError("browser_unavailable", "Disconnected"))
+        self.assertFalse((await operation)["ok"])
+        self.assertEqual(session.workspace.document["wires"], [])
+
+    async def test_retained_steps_stay_attached_to_messages_when_history_is_trimmed(self):
+        session = self.runtime.create("owner", document())
+        session.messages = [{"role": "user", "content": str(index)} for index in range(110)]
+        session.active_turn = "recent-turn"
+        self.runtime.emit(session, "turn.started", {"turn_id": session.active_turn})
+        self.runtime.emit(session, "tool.state", {"call_id": "read", "name": "get_project", "status": "completed"})
+        session.active_turn = ""
+        self.runtime.save(session)
+        restored = AgentRuntime(self.directory.name).get("owner", session.id)
+        self.assertEqual(len(restored.messages), 100)
+        self.assertEqual(restored.turns[0]["message_index"], 99)
+        self.assertEqual(restored.messages[restored.turns[0]["message_index"]]["content"], "109")
 
     async def test_mcp_tokens_expire_outside_active_turn(self):
         session = self.runtime.create("owner", document())

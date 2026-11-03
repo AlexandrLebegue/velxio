@@ -2,6 +2,7 @@ import { getApiBase } from '../lib/apiBase';
 import { buildVlxPayload } from '../utils/vlxFile';
 import type { VlxPayload } from '../utils/vlxFile';
 import { generateUUID } from '../utils/uuid';
+import { normalizeAgentDocument } from './agentDocument';
 
 export interface AgentSettings {
   base_url: string;
@@ -20,12 +21,34 @@ export interface AgentSession {
   sequence: number;
   busy: boolean;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  turns?: AgentTurn[];
+}
+
+export interface AgentStep {
+  id: string;
+  name: string;
+  title: string;
+  status: 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
+  summary?: string;
+  duration_ms?: number;
+  started_at?: number;
+}
+export interface AgentTurn {
+  id: string;
+  message_index: number;
+  status: string;
+  phase: string;
+  started_at?: number;
+  reasoning: Record<string, string>;
+  steps: AgentStep[];
 }
 
 export interface AgentEvent {
   event_id: number;
   type: string;
   payload: Record<string, unknown>;
+  turn_id?: string;
+  timestamp?: number;
 }
 
 let browserId: string | undefined;
@@ -76,7 +99,10 @@ export async function projectRevision(payload: VlxPayload = buildVlxPayload()): 
   if (!globalThis.crypto?.subtle)
     return (await agentRequest<{ revision: string }>('/revision', 'POST', { document: payload }))
       .revision;
-  const value = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+  const value = JSON.parse(JSON.stringify(normalizeAgentDocument(payload))) as Record<
+    string,
+    unknown
+  >;
   delete value.exportedAt;
   delete value.name;
   for (const board of (value.boards ?? []) as Array<Record<string, unknown>>)

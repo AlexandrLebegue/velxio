@@ -33,7 +33,7 @@ import { connectAnalogInputsToMcu } from './connectAnalogInputsToMcu';
 import { connectDigitalInputsToMcu } from './connectDigitalInputsToMcu';
 import { connectChipInputsToSolve } from './connectChipInputsToSolve';
 import { connectMcuEdgesToService } from './connectMcuEdgesToService';
-import { setElectricalResolveHook } from './electricalResolveHook';
+import { setElectricalResolveHook, setElectricalFlushHook } from './electricalResolveHook';
 import { startAnalogScopeFeed } from './analogScopeFeed';
 import { pickSolverError, startSolverFaultReporter } from './solverFaultReporter';
 import { collectPinStates } from './collectPinStates';
@@ -106,6 +106,7 @@ export function startSimulation(): () => void {
   // rebuild+solve cycles with no idle gap, which starves the main thread.
   // One trailing tick per window keeps the last state without the storm.
   const RESOLVE_THROTTLE_MS = 33;
+  setElectricalFlushHook(() => service.flush());
   let lastResolveAt = 0;
   let trailingResolve: ReturnType<typeof setTimeout> | null = null;
   setElectricalResolveHook(() => {
@@ -188,6 +189,7 @@ export function startSimulation(): () => void {
 
   return () => {
     setElectricalResolveHook(null);
+    setElectricalFlushHook(null);
     unsubAnalogScope();
     unsubFault();
     if (trailingResolve !== null) {

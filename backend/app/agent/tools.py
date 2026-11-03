@@ -14,7 +14,11 @@ def create_tools(runtime):
     authorization = ContextVar("velxio_agent_authorization", default="")
     mcp = FastMCP("velxio-project", stateless_http=True, json_response=True, streamable_http_path="/mcp")
     empty = {"type": "object", "properties": {}, "additionalProperties": False}
+    endpoint = {"type": "object", "properties": {"componentId": {"type": "string"}, "pinName": {"type": "string"}}, "required": ["componentId", "pinName"], "additionalProperties": False}
     schemas = {
+        "connect_pins": ("Connect two real pins in the active circuit. Velxio validates pins and computes wire geometry; no coordinates needed.", {"type": "object", "properties": {"from": endpoint, "to": endpoint}, "required": ["from", "to"], "additionalProperties": False}),
+        "disconnect_wire": ("Remove a wire by its ID and apply the validated circuit", {"type": "object", "properties": {"wire_id": {"type": "string"}}, "required": ["wire_id"], "additionalProperties": False}),
+        "set_component_properties": ("Merge properties into an existing component and revalidate all connected pins before applying", {"type": "object", "properties": {"component_id": {"type": "string"}, "properties": {"type": "object"}}, "required": ["component_id", "properties"], "additionalProperties": False}),
         "create_project": ("Create a valid AVR starter when the current workspace is empty; automatically attach its source folder and project ID", {"type": "object", "properties": {"board": {"enum": ["arduino-uno", "arduino-nano", "arduino-mega", "attiny85"]}}, "additionalProperties": False}),
         "get_project": ("Inspect the active project, board, circuit and source group paths", empty),
         "run_project": ("Compile and really start the active project in the connected editor. Read the returned status; compilation alone is not success.", empty),
