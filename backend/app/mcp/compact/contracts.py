@@ -46,15 +46,17 @@ change["oneOf"] = [
 ]
 save = obj({"document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
             "project_id": identifier, "expected_version": version})
-save["oneOf"] = [
-    {"required": ["document"], "not": {"anyOf": [{"required": ["changes"]}, {"required": ["project_id"]}, {"required": ["expected_version"]}]}},
-    {"required": ["document", "project_id", "expected_version"], "not": {"required": ["changes"]}},
-    {"required": ["changes", "project_id", "expected_version"], "not": {"required": ["document"]}},
-]
-build = {"oneOf": [
-    obj({"action": {"const": "start"}, "project_id": identifier, "version": version, "board_id": identifier}, ["action", "project_id", "version", "board_id"]),
-    obj({"action": {"const": "status"}, "build_id": identifier}, ["action", "build_id"]),
-]}
+# Keep action/CAS alternatives below the object root for MCP client schemas.
+save["if"] = {"required": ["changes"]}
+save["then"] = {"required": ["project_id", "expected_version"], "not": {"required": ["document"]}}
+save["else"] = {
+    "required": ["document"],
+    "if": {"anyOf": [{"required": ["project_id"]}, {"required": ["expected_version"]}]},
+    "then": {"required": ["project_id", "expected_version"]},
+}
+# Per-action required/forbidden fields are enforced by BuildService.build_project.
+build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
+             "board_id": identifier, "build_id": identifier}, ["action"])
 
 _INPUTS = {
     "search_catalog": obj({"query": {"type": "string", "maxLength": 256, "default": ""},

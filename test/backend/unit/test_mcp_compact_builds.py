@@ -110,6 +110,25 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(raw), artifact["size_bytes"])
         return bytes(raw)
 
+    async def test_action_requirements_and_mixed_fields_are_refused_before_admission(self):
+        start = {'action':'start', 'project_id':'p_'+'0'*32, 'version':'a'*64, 'board_id':'esp'}
+        status = {'action':'status', 'build_id':'b_'+'1'*32}
+        cases = [{}, {'action':'start'}, {'action':'status'},
+                 *[{k:v for k,v in start.items() if k != missing}
+                   for missing in ('project_id','version','board_id')],
+                 {**start, 'build_id':status['build_id']},
+                 *[{**status, key:start[key]} for key in ('project_id','version','board_id')]]
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = await self.service.build_project(**arguments)
+                self.assertFalse(result['ok'], result)
+                self.assertEqual(result['error']['code'], 'invalid_argument')
+                self.assertIn('start(project_id,version,board_id)', result['error']['message'])
+                self.assertIn('status(build_id)', result['error']['message'])
+        self.assertEqual(self.gate.entered, 0)
+        self.assertEqual(self.requests, [])
+        self.assertIsNone(self.service.lease)
+
     async def test_exact_v1_native_subset_after_v2_and_no_payload_in_status(self):
         original = document()
         first = self.save(original)

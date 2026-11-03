@@ -153,6 +153,25 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertTrue(catalog.get_reference(id=entry["id"])["ok"])
         self.assertLessEqual(len(encoded(result)), MAX_RESPONSE_BYTES)
 
+    def test_all_six_input_schema_roots_are_client_compatible_objects(self):
+        self.assertEqual(len(TOOL_SCHEMAS), 6)
+        for name, tool in TOOL_SCHEMAS.items():
+            with self.subTest(tool=name):
+                schema = tool['inputSchema']
+                self.assertEqual(schema['type'], 'object')
+                self.assertIsInstance(schema['properties'], dict)
+                self.assertFalse(schema['additionalProperties'])
+                self.assertFalse(set(schema) & {'oneOf', 'anyOf', 'allOf'})
+
+    def test_flat_build_schema_preserves_action_and_field_constraints(self):
+        schema = TOOL_SCHEMAS['build_project']['inputSchema']
+        self.assertEqual(schema['required'], ['action'])
+        self.assertEqual(schema['properties']['action'], {'type':'string', 'enum':['start','status']})
+        self.assertEqual(set(schema['properties']), {'action','project_id','version','board_id','build_id'})
+        for name in ('project_id','board_id','build_id'):
+            self.assertEqual(schema['properties'][name], {'type':'string','minLength':1,'maxLength':200})
+        self.assertEqual(schema['properties']['version'], {'type':'string','pattern':'^[0-9a-f]{64}$'})
+
     def test_no_fake_handlers_and_exactly_six_schemas(self):
         self.assertEqual(set(TOOL_SCHEMAS), {"search_catalog", "get_reference", "save_project", "check_project", "build_project", "read_artifact"})
         for name, spec in TOOL_SCHEMAS.items():
@@ -186,6 +205,11 @@ class CompactCatalogTests(unittest.TestCase):
             ("save_project", {"project_id": "p", "expected_version": version, "changes": [{"op": "set", "path": "/name", "value": "new"}]}, True),
             ("save_project", {"changes": [{"op": "remove", "path": "/boards/0"}]}, False),
             ("save_project", {"document": doc, "project_id": "p"}, False),
+            ("save_project", {"document": doc, "expected_version": version}, False),
+            ("save_project", {"project_id": "p", "expected_version": version}, False),
+            ("save_project", {"project_id": "p", "expected_version": version, "changes": [{"op": "remove", "path": "/name"}]}, True),
+            ("save_project", {"document": doc, "project_id": "p", "expected_version": version,
+                              "changes": [{"op": "remove", "path": "/name"}]}, False),
             ("save_project", {"document": doc, "project_id": "p", "expected_version": version, "changes": []}, False),
             ("build_project", {"action": "start", "project_id": "p", "version": version, "board_id": "b"}, True),
             ("build_project", {"action": "status", "build_id": "b"}, True),
