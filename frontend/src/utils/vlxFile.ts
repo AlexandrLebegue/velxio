@@ -30,7 +30,6 @@
  */
 
 import type { BoardInstance } from '../types/board';
-import type { Component } from '../types/component';
 import type { Wire } from '../types/wire';
 import { useEditorStore, chipFileGroupId } from '../store/useEditorStore';
 import { useSimulatorStore } from '../store/useSimulatorStore';
@@ -61,7 +60,7 @@ export interface VlxPayload {
   /** EMPTY folders per group (folders holding files exist via name prefixes).
    *  Optional — absent in projects saved before folders shipped. */
   folderGroups?: Record<string, string[]>;
-  components: Component[];
+  components: ReturnType<typeof useSimulatorStore.getState>['components'];
   wires: Wire[];
   activeBoardId: string | null;
 }
@@ -85,6 +84,8 @@ function serialisableBoard(b: BoardInstance) {
     // silently reverted re-imported projects to scan-all resolution
     // (2026-08 library-contamination investigation).
     libraries: b.libraries,
+    boardOptions: b.boardOptions,
+    spiffsFiles: b.spiffsFiles,
   };
 }
 

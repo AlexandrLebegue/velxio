@@ -9,6 +9,7 @@ import { useSEO } from '../utils/useSEO';
 import { getLocaleFromPath, localizedPath } from '../i18n/path';
 import { restoreStashedWorkspace } from '../utils/workspaceDraft';
 import { CodeEditor } from '../components/editor/CodeEditor';
+import { AgentPanel } from '../components/agent/AgentPanel';
 import { EditorToolbar } from '../components/editor/EditorToolbar';
 import { FileExplorer } from '../components/editor/FileExplorer';
 
@@ -836,6 +837,7 @@ export const EditorPage: React.FC = () => {
       {/* Slot reserved for the private pro overlay (e.g. agent chat panel).
           Self-hosted builds without an overlay see nothing here. */}
       <div data-velxio-slot="agent-chat" />
+      {(!import.meta.env.VITE_PRO_BUILD || import.meta.env.VITE_CONNECTABLE_AGENT === 'true') && <AgentPanel />}
     </div>
   );
 };

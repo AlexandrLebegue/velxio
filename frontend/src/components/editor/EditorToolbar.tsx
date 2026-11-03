@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { registerEditorCommand } from '../../lib/editorCommands';
+import { registerProjectExecutor } from '../../services/projectExecution';
 import { publishCompileOutput } from '../../lib/intellisenseRegistry';
 import { useEditorStore, chipFileGroupId } from '../../store/useEditorStore';
 import { useSimulatorStore, piRerunScript, keepWireShapes } from '../../store/useSimulatorStore';
@@ -1693,6 +1694,10 @@ export const EditorToolbar = ({
   });
   const menuCommandsRef = useRef(makeMenuCommands());
   menuCommandsRef.current = makeMenuCommands();
+  useEffect(() => registerProjectExecutor(async () => {
+    if (compiling || runInFlightRef.current) throw new Error('The editor is already compiling or verifying a circuit.');
+    await handleRun();
+  }, () => { autoRunAfterCompile.current = false; handleStop(); }));
   useEffect(() => {
     const offs = [
       registerEditorCommand('project.import', () => menuCommandsRef.current.import()),

@@ -220,6 +220,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh \
     | BINDIR=/usr/local/bin sh
 
+# Optional coding-agent harness, version and checksums pinned in the installer.
+# The base image remains usable without it; enable with docker-compose.agent.yml.
+ARG INSTALL_OPENCODE=0
+COPY scripts/install-opencode.sh /tmp/install-opencode.sh
+RUN if [ "$INSTALL_OPENCODE" = "1" ]; then sh /tmp/install-opencode.sh; fi \
+    && rm /tmp/install-opencode.sh
+
 # ---- WASI-SDK: the custom-chip compiler ----
 # POST /api/compile-chip/ shells out to clang from the WASI-SDK (see
 # app/services/chip_compile.py, which looks in /opt/wasi-sdk first). Without

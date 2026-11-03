@@ -17,6 +17,8 @@
  */
 
 export type EditorCommandId =
+  | 'agent.open'
+  | 'agent.settings'
   | 'project.new'
   | 'project.save'
   | 'project.open'

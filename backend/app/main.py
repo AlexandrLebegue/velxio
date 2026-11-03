@@ -49,8 +49,11 @@ async def lifespan(_app: FastAPI):
     # private overlay's register_pro() can add more. Running zero hooks is
     # the expected behavior of a stateless OSS image.
     await run_lifespan_startup()
-    async with _app.state.compact_lifespan():
-        yield
+    async with _app.state.compact_lifespan(), agent.tools_manager.run():
+        try:
+            yield
+        finally:
+            await agent.runtime.close()
 
 
 app = FastAPI(
@@ -130,6 +133,20 @@ app.include_router(iot_gateway.router, prefix="/api/gateway", tags=["iot-gateway
 # VELXIO_NEWS=off (an offline host just serves an empty feed).
 from app.api.routes import news
 app.include_router(news.router, prefix="/api/news", tags=["news"])
+
+# Optional project-scoped coding agent. The harness starts lazily, on the
+# first message; compiling/simulating without an agent has no new dependency.
+from app.api.routes import agent
+from app.agent.settings import AgentError
+
+
+@app.exception_handler(AgentError)
+async def agent_error_handler(request, exc):
+    return JSONResponse({"error": {"code": exc.code, "message": str(exc)}}, status_code=exc.status)
+
+
+app.include_router(agent.router, prefix="/api/agent", tags=["agent"])
+app.mount("/api/agent/tools", agent.tools_app, name="agent-tools")
 
 # Optional pro extension. The `app.pro` package only exists in private builds
 # (overlaid at Docker build time by an external repo) — its absence in the

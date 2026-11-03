@@ -175,6 +175,10 @@ The self-hosted image runs the first five families out of the box. Everything el
 
 ## Features
 
+### Optional AI agent
+
+Open **Agent IA** in the editor to connect your own Chat Completions-compatible model by API URL, model ID and optional key. A managed OpenCode harness edits the current project, runs AVR simulations and reads serial output. See the [setup and scope](docs/agent-connectable.md), including the optional Docker configuration.
+
 ### Code Editing
 
 - **Monaco Editor** — Full C++ / Python editor with syntax highlighting, autocomplete, minimap, and dark theme
