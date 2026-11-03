@@ -6,6 +6,8 @@ import os
 import re
 import time
 import uuid
+import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,41 @@ from app.services.espidf_compiler import espidf_compiler
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+_COMPACT_OFFLINE_OWNER = None
+
+
+@asynccontextmanager
+async def _compact_offline_lifespan(app):
+    from app.mcp.compact.offline_owner import RestCompileOwner
+    global _COMPACT_OFFLINE_OWNER
+    try:
+        owner = RestCompileOwner.from_route(sys.modules[__name__])
+    except (ValueError, TypeError):
+        logger.warning('Compact offline owner could not be verified; legacy REST remains available')
+        yield
+        return
+    owner.activate(app)
+    _COMPACT_OFFLINE_OWNER = owner
+    logger.info('Compact offline REST owner registered pid=%s; ESP32 capability blockers=%s; OS network isolation not provided', owner.pid, owner.production_blockers)
+    try:
+        yield
+    finally:
+        runtime = getattr(app.state, 'compact_runtime', None)
+        if runtime is not None:
+            await runtime.close()
+        await owner.close()
+        _COMPACT_OFFLINE_OWNER = None
+
+
+async def bind_compact_offline_owner(http_request, user_id=None):
+    """Internal only, inside the active REST application process/event loop."""
+    from app.mcp.compact.projects import fail
+    if _COMPACT_OFFLINE_OWNER is None:
+        fail('owner_integration_required', 'REST application lifespan has not activated its offline owner')
+    return _COMPACT_OFFLINE_OWNER.bind(http_request, user_id)
+
+
+router = APIRouter(lifespan=_compact_offline_lifespan)
 arduino_cli = ArduinoCLIService()
 
 # ── Async compile job registry ───────────────────────────────────────────────

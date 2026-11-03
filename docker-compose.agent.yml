@@ -1,0 +1,11 @@
+# Optional private single-user agent runtime:
+# docker compose -f docker-compose.yml -f docker-compose.agent.yml up --build
+services:
+  velxio:
+    build:
+      args:
+        INSTALL_OPENCODE: "1"
+    environment:
+      VELXIO_AGENT_DATA: /app/data/agent
+      VELXIO_AGENT_ALLOW_ANONYMOUS: "1"
+      VELXIO_OPENCODE_BIN: /usr/local/bin/opencode

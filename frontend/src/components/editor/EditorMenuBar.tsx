@@ -111,6 +111,8 @@ export const EditorMenuBar: React.FC = () => {
   }, [open]);
 
   const fileItems: Item[] = [
+    { kind: 'command', id: 'agent.open', label: t('agent.open', 'AI agent'), optional: true },
+    { kind: 'command', id: 'agent.settings', label: t('agent.settings', 'AI connection settings'), optional: true },
     { kind: 'command', id: 'project.new', label: t('editor.menu.newProject', 'New workspace') },
     { kind: 'command', id: 'file.new', label: t('editor.menu.newFile', 'New file') },
     { kind: 'separator' },

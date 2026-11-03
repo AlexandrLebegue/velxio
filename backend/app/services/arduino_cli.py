@@ -280,6 +280,33 @@ class ArduinoCLIService:
         "ATTinyCore:avr": "1.4.1",
     }
 
+    # ESP32-only defines, issued as ONE build property: compiler.cpp.extra_flags.
+    #
+    # Not build.extra_flags — that property is where the arduino-esp32 core
+    # keeps ITS OWN native flags (platform.txt):
+    #   3.3.8 : -DARDUINO_HOST_OS=... -DARDUINO_FQBN=... -DESP32=ESP32 ...
+    #   2.0.17: -DESP32 -DCORE_DEBUG_LEVEL=... {build.extra_flags.{build.mcu}}
+    # `--build-property` REPLACES a property's value, so overriding
+    # build.extra_flags silently stripped -DESP32 (and the USB-CDC flag) from
+    # every ESP32 compile line. C++ libraries branching on `defined(ESP32)`
+    # then took the AVR fallback — GxEPD2 1.6.9:
+    #   #if defined(ESP8266) || defined(ESP32)
+    #   #include <pgmspace.h>
+    #   #else
+    #   #include <avr/pgmspace.h>   -> fatal on the Xtensa toolchain
+    # compiler.cpp.extra_flags is empty in every arduino-esp32 core and is
+    # prepended to recipe.cpp.o.pattern, so it only ever ADDS. The .c recipe
+    # is left to the core: no library we ship is .c code that needs the
+    # markers (GxEPD2 is all .cpp), and overriding the C property would risk
+    # the same clobber on a future core.
+    #   -DARDUINO_ESP32_LCGAMBOA=1  marker for the lcgamboa QEMU firmware.
+    #                                (DIO flash mode itself rides the
+    #                                :FlashMode=dio FQBN option.)
+    #   -DBitOrder=uint8_t          Adafruit_BusIO 1.17.x dropped BitOrder on
+    #                                ESP32 3.x; restores it as uint8_t, the
+    #                                type it used to be.
+    ESP32_CPP_EXTRA_FLAGS = "-DARDUINO_ESP32_LCGAMBOA=1 -DBitOrder=uint8_t"
+
     def __init__(self, cli_path: str = "arduino-cli"):
         self.cli_path = cli_path
         # Cached `core list` output; see _is_core_installed. Invalidated
@@ -529,6 +556,32 @@ class ArduinoCLIService:
         """
         return "esp32c3" in fqbn or "xiao-esp32-c3" in fqbn or "aitewinrobot-esp32c3-supermini" in fqbn
 
+    def _compile_command(self, board_fqbn: str, build_dir: Path, sketch_dir: Path) -> list:
+        """The arduino-cli argv for one compile request.
+
+        ESP32 targets get FlashMode=dio (required by the esp32-picsimlab QEMU
+        machine; an FQBN that already carries a FlashMode option keeps it)
+        plus the ESP32_CPP_EXTRA_FLAGS defines — see that constant for why
+        build.extra_flags must never be overridden. Every other family gets
+        a plain compile.
+        """
+        if self._is_esp32_board(board_fqbn):
+            fqbn = board_fqbn if "FlashMode" in board_fqbn else board_fqbn + ":FlashMode=dio"
+            return [
+                self.cli_path, "compile",
+                "--fqbn", fqbn,
+                "--build-property",
+                f"compiler.cpp.extra_flags={self.ESP32_CPP_EXTRA_FLAGS}",
+                "--output-dir", str(build_dir),
+                str(sketch_dir),
+            ]
+        return [
+            self.cli_path, "compile",
+            "--fqbn", board_fqbn,
+            "--output-dir", str(build_dir),
+            str(sketch_dir),
+        ]
+
     async def compile(
         self,
         files: list[dict],
@@ -654,34 +707,12 @@ class ArduinoCLIService:
                     if _fb:
                         compile_env["ARDUINO_DIRECTORIES_USER"] = _fb
 
-                # Run compilation using subprocess.run in a thread (Windows compatible)
-                # ESP32 lcgamboa emulator requires DIO flash mode and
-                # IRAM-safe interrupt placement to avoid cache errors.
-                # Force these at compile time for all ESP32 targets.
-                cmd = [self.cli_path, "compile", "--fqbn", board_fqbn]
-                if self._is_esp32_board(board_fqbn):
-                    # FlashMode=dio: required by esp32-picsimlab QEMU machine
-                    # IRAM_ATTR on all interrupt handlers prevents cache crashes
-                    # when WiFi emulation disables the SPI flash cache on core 1.
-                    fqbn_dio = board_fqbn
-                    if 'FlashMode' not in board_fqbn:
-                        fqbn_dio = board_fqbn + ':FlashMode=dio'
-                    cmd[2] = '--fqbn'
-                    cmd.insert(3, fqbn_dio)
-                    cmd = cmd[:4]  # trim accidental duplicates
-                    cmd = [self.cli_path, "compile", "--fqbn", fqbn_dio,
-                           "--build-property",
-                           "build.extra_flags=-DARDUINO_ESP32_LCGAMBOA=1",
-                           # Adafruit_BusIO 1.17.x dropped BitOrder on ESP32 3.x;
-                           # this define restores it as uint8_t (the type it was).
-                           "--build-property",
-                           "compiler.cpp.extra_flags=-DBitOrder=uint8_t",
-                           "--output-dir", str(build_dir),
-                           str(sketch_dir)]
-                else:
-                    cmd = [self.cli_path, "compile", "--fqbn", board_fqbn,
-                           "--output-dir", str(build_dir),
-                           str(sketch_dir)]
+                # Run compilation using subprocess.run in a thread (Windows
+                # compatible). The ESP32-specific argv (DIO FQBN + custom
+                # defines) is built in _compile_command — see the
+                # ESP32_CPP_EXTRA_FLAGS comment for why build.extra_flags
+                # must never be overridden.
+                cmd = self._compile_command(board_fqbn, build_dir, sketch_dir)
                 print(f"Running command: {' '.join(cmd)}")
 
                 # Use subprocess.run in a thread for Windows compatibility
@@ -929,6 +960,26 @@ class ArduinoCLIService:
                     # rmtree unlinks the symlinks, never their cache / store /
                     # legacy targets.
                     shutil.rmtree(scope_dir.parent, ignore_errors=True)
+
+    def offline_capabilities(self):
+        return {'ready': False, 'blockers': ['arduino_platform_recipes_and_prebuild_hooks_not_network_isolated']}
+
+    async def compile_offline(self, files, board_fqbn, *, offline_evidence=None, library_proofs=None,
+                              board_options=None, allowed_libraries=None, owner_id=None):
+        """Fail-closed internal API: no core query/install, fallback or recipe run.
+
+        Existing platform recipes/prebuild hooks execute arbitrary commands.
+        A verified installed-core inventory alone cannot prove them offline.
+        """
+        evidence = offline_evidence or {}
+        core = evidence.get('arduino_core') or {}
+        expected = ':'.join(board_fqbn.split(':')[:2])
+        if core.get('id') != expected or not core.get('platform_sha256') or not core.get('version'):
+            return {'success': False, 'error_kind': 'core_unavailable', 'error': 'Installed core proof is required; auto-install forbidden', 'stdout': '', 'stderr': ''}
+        if allowed_libraries is None or set(allowed_libraries) - set(library_proofs or {}):
+            return {'success': False, 'error_kind': 'dependency_unavailable', 'error': 'Closed verified library scope required', 'stdout': '', 'stderr': ''}
+        return {'success': False, 'error_kind': 'offline_guard_unavailable',
+                'error': 'Platform recipes/hooks are not isolated from network/install commands; no compiler executed', 'stdout': '', 'stderr': ''}
 
     async def list_boards(self) -> list:
         """

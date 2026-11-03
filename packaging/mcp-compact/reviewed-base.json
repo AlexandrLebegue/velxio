@@ -1,0 +1,14 @@
+{
+  "/app/app/api/routes/compile.py": "ba097d312ce6c2ddbfe5475e6ddbc4c76077f3ac1224f1d164c4fc3c1cdd7fc2",
+  "/app/app/main.py": "9ca6a060b5a2be25e70b209377f5b7af0ae3bb1f26023c7b5284658645c31a84",
+  "/app/app/services/arduino_cli.py": "3234260402d17629fd5467ca194064907216cdab5fffad42f669ee84f70673cd",
+  "/app/app/services/esp-idf-template/CMakeLists.txt": "88faadfe7f36f6d5adcb8da30436b12a24c75f2a0495f6d296356d432dc9f9cf",
+  "/app/app/services/esp-idf-template/main/CMakeLists.txt": "c9e7f181f04d70d4848d471eae8f508d9c6430817e45fca602f26837b4468c06",
+  "/app/app/services/esp-idf-template/main/main.c": "f8c477a3ec9bab8c20cb01093464647aed44943e2c6fe3b6996c81f6fceea8da",
+  "/app/app/services/esp-idf-template/main/main.cpp": "9ddc152baa55a0fd3b7f7ac7fb070547996d8ec9bb67bafd8efcc1aca0f36e71",
+  "/app/app/services/esp-idf-template/main/velxio_compat.h": "840b9e458da2377ad5f4f75aa79439875c5541e151e3f253fb4bf4dac28d14a4",
+  "/app/app/services/esp-idf-template/partitions.csv": "f067baae69b657eccd2ba1eed9c718aeadc3c8e45e2a7b6cc99045c5c9fb4801",
+  "/app/app/services/esp-idf-template/sdkconfig.defaults": "733cf3d1d0e4544fc803768065eb035c2ab50fe821f879cf5056febf88115d43",
+  "/app/app/services/esp-idf-template/sdkconfig.defaults.in": "dd9eb916cc6e4cd34cf7f41afcc10eabf8ee9934bc23afd20fee98a26e1f2f60",
+  "/app/app/services/espidf_compiler.py": "cc4ea9f12ff526ccc22c8270d8ddd172f23f94906587a8ea92e742b8986c3237"
+}
