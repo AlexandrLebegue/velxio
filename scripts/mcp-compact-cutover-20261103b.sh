@@ -120,7 +120,9 @@ for mount in old['Mounts']:
         host['Mounts'].append({'Type':'volume','Source':mount['Name'],'Target':mount['Destination'],
                               'ReadOnly':not mount['RW'],'VolumeOptions':{'NoCopy':True}})
 require(spec['HostConfig'] == host, 'HostConfig/HostIp/binds/volumes differ from original')
-require(live['Mounts'] == old['Mounts'], 'Original actual mounts changed since backup')
+require(sorted(live['Mounts'], key=lambda mount: mount['Destination']) ==
+        sorted(old['Mounts'], key=lambda mount: mount['Destination']),
+        'Original actual mounts changed since backup')
 spec['Image'] = expected_image  # Freeze creation against tag changes after preflight.
 (evidence/'pinned-create.json').write_text(json.dumps(spec, sort_keys=True, indent=2)+'\n')
 (evidence/'original-id.txt').write_text(old['Id']+'\n')

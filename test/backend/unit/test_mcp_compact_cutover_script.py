@@ -2,10 +2,12 @@
 
 Never invokes actual Docker/systemctl, HTTP, the backend or a compiler.
 """
+import copy
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -84,6 +86,57 @@ else:
                     pinned = json.loads((root / f'evidence-{index}/pinned-create.json').read_bytes())
                     self.assertEqual(pinned['Image'], expected)
                     self.assertEqual(pinned['HostConfig'], host)
+
+
+    def test_preflight_mount_order_only_is_ignored_real_changes_are_refused(self):
+        # Execute the actual embedded preflight against local JSON fixtures.
+        # No shell/service/container command is run by this test.
+        marker = """python3 - "$BACKUP" "$EVIDENCE" "$EXPECTED" "$ACTION" <<'PY'\n"""
+        preflight = SCRIPT.read_text().split(marker, 1)[1].split('\nPY\n', 1)[0]
+        with tempfile.TemporaryDirectory(prefix='compact-mount-order-') as temporary:
+            root = Path(temporary); backup = root / 'backup'; backup.mkdir()
+            host = {'NetworkMode':'bridge', 'AutoRemove':False, 'VolumesFrom':None,
+                    'Binds':['existing-data:/app/data','existing-build:/var/lib/velxio-build'],
+                    'Mounts':None, 'PortBindings':{'80/tcp':[{'HostIp':'','HostPort':'3080'}],
+                                                 '8002/tcp':[{'HostIp':'','HostPort':'8002'}]}}
+            mounts = [{'Type':'volume','Name':name,
+                       'Source':'/var/lib/docker/volumes/'+name+'/_data',
+                       'Destination':destination,'RW':True,'Propagation':''}
+                      for name, destination in [('existing-data','/app/data'),
+                                                ('existing-build','/var/lib/velxio-build')]]
+            old = {'Id':'c'*64,'Name':'/velxio','Image':'sha256:11c7b4bd'+'0'*56,
+                   'State':{'Running':True},'Config':{'Image':'ghcr.io/controlled/velxio:master'},
+                   'HostConfig':host,'Mounts':mounts}
+            (backup/'container-inspect.json').write_text(json.dumps([old]))
+            (backup/'was-active').write_text('active\n')
+            (backup/'was-enabled').write_text('enabled\n')
+            expected = 'sha256:'+'6'*64
+            cases = [('reordered',None,None),('different-name','Name','different-volume'),
+                     ('different-rw','RW',False),('different-extra-field','Driver','other-driver')]
+            for label, field, value in cases:
+                with self.subTest(case=label):
+                    evidence = root/label; evidence.mkdir()
+                    live = copy.deepcopy(old); live['Mounts'].reverse()
+                    if field is not None: live['Mounts'][0][field] = value
+                    files = {'original-live.json':[live], 'target-image.json':[{'Id':expected}],
+                             'input-create.json':{'Image':'velxio:compact-20261103b',
+                                 'Entrypoint':['/app/mcp-compact-entrypoint.sh'],'Cmd':[],
+                                 'HostConfig':host}}
+                    for name, content in files.items():
+                        (evidence/name).write_text(json.dumps(content))
+                    for name, content in [('exec-start.txt','{ path=/usr/local/bin/velxio-mcp ; }'),
+                                          ('unit-active.txt','active'),('unit-enabled.txt','enabled'),
+                                          ('container-names.txt','velxio\n')]:
+                        (evidence/name).write_text(content)
+                    result = subprocess.run([sys.executable,'-',str(backup),str(evidence),expected,'cutover'],
+                                            input=preflight,text=True,capture_output=True,timeout=10)
+                    if field is None:
+                        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+                        self.assertEqual(json.loads(result.stdout)['preflight'],'verified')
+                    else:
+                        self.assertNotEqual(result.returncode,0)
+                        self.assertIn('Original actual mounts changed since backup',result.stderr)
+                        self.assertFalse((evidence/'pinned-create.json').exists())
 
 
 if __name__ == '__main__':
