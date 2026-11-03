@@ -1,5 +1,6 @@
 """Exact-version structural checks with real catalog and temporary stdlib store."""
 
+import ast
 import base64
 import copy
 import hashlib
@@ -15,7 +16,76 @@ sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(Path(__file__).parent))
 from app.mcp.compact import Catalog, LibraryInventory, ProjectChecker, ProjectStore
 from app.mcp.compact.projects import canonical
+from app.mcp.compact.checks import CompilerPolicy, _policy_ast_dump_v1, legacy_file_behavior
 from test_mcp_compact_projects import document
+
+
+class CompilerPolicyCanonicalAstTests(unittest.TestCase):
+    """Runs under either 3.12/3.13 without SDK, compiler, Node or network."""
+
+    def test_original_source_fingerprints_are_preserved(self):
+        cases = (
+            ('espidf_compiler.py', '_write_arduino_user_files', '3af9f3fc8c905d28a83933bfb4bba6ebe95053bef8a22c986cc66bbfc4d913b3'),
+            ('espidf_compiler.py', '_compile_in_dir', '39faa596be9d697da91d5bb066db672ea64dcc430f767d070f9b8189569ec3fd'),
+            ('arduino_cli.py', 'compile', '58c4fd9f87d4aedfe6ef19e2a907075ae52bb5cea73ae3db6ff986025ff562e9'),
+        )
+        for filename, name, expected in cases:
+            with self.subTest(function=name):
+                tree = ast.parse((ROOT / 'backend/app/services' / filename).read_bytes())
+                node = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+                if name == '_compile_in_dir':
+                    node = legacy_file_behavior(node)
+                serialized = _policy_ast_dump_v1(node)
+                self.assertEqual(hashlib.sha256(serialized.encode()).hexdigest(), expected)
+        self.assertEqual(CompilerPolicy(ROOT).prefix, 'user_')
+
+    def test_empty_fields_optional_none_and_semantic_none(self):
+        self.assertEqual(_policy_ast_dump_v1(ast.parse('def f():\n    pass')),
+                         "Module(body=[FunctionDef(name='f', args=arguments(), body=[Pass()])])")
+        self.assertEqual(_policy_ast_dump_v1(ast.Constant(value=None)), 'Constant(value=None)')
+        self.assertNotEqual(_policy_ast_dump_v1(ast.parse('x = None')),
+                            _policy_ast_dump_v1(ast.parse('x = False')))
+        with self.assertRaises(TypeError):
+            _policy_ast_dump_v1('not an AST')
+
+    def copy_policy(self, root):
+        service = root / 'backend/app/services'
+        service.mkdir(parents=True)
+        actual = ROOT / 'backend/app/services'
+        for name in ('espidf_compiler.py', 'arduino_cli.py'):
+            shutil.copyfile(actual / name, service / name)
+        shutil.copytree(actual / 'esp-idf-template', service / 'esp-idf-template')
+        return service
+
+    def test_semantic_file_write_and_mapping_mutations_remain_refused(self):
+        mutations = (
+            ("(main_dir / target).write_text(content, encoding='utf-8')",
+             "(main_dir / target).write_text('changed content', encoding='utf-8')",
+             'Compiler file-writing behavior changed'),
+            ('return _USER_FILE_PREFIX + base', "return 'changed_' + base", 'User-file mapping changed'),
+        )
+        for before, after, error in mutations:
+            with self.subTest(mutation=before), tempfile.TemporaryDirectory(prefix='policy-ast-mutation-') as temporary:
+                root = Path(temporary)
+                service = self.copy_policy(root)
+                source = service / 'espidf_compiler.py'
+                raw = source.read_text()
+                self.assertIn(before, raw)
+                source.write_text(raw.replace(before, after, 1))
+                with self.assertRaisesRegex(ValueError, error):
+                    CompilerPolicy(root)
+
+    def test_missing_policy_sources_remain_refused(self):
+        for missing in ('espidf_compiler.py', 'arduino_cli.py', 'esp-idf-template/main'):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory(prefix='policy-ast-missing-') as temporary:
+                root = Path(temporary)
+                source = self.copy_policy(root) / missing
+                if source.is_dir():
+                    shutil.rmtree(source)
+                else:
+                    source.unlink()
+                with self.assertRaises(FileNotFoundError):
+                    CompilerPolicy(root)
 
 
 class ProjectCheckTests(unittest.TestCase):

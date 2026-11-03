@@ -99,6 +99,34 @@ def legacy_file_behavior(node):
     return DefaultProjection().visit(result)
 
 
+def _policy_ast_dump_v1(node):
+    """Frozen policy serialization: annotated Python 3.13-style compact dump.
+
+    Keep field order and semantic values (including Constant(value=None)); omit
+    empty list fields and optional None defaults. No attributes, ast.dump or
+    3.13-only _field_types are used, so 3.12 emits the same fingerprint bytes.
+    Versioning lives in this function's name, not the existing hash payload.
+    """
+    if not isinstance(node, ast.AST):
+        raise TypeError('Policy serialization requires an AST node')
+
+    def render(value):
+        if isinstance(value, ast.AST):
+            fields = []
+            for name, child in ast.iter_fields(value):
+                if isinstance(child, list) and not child:
+                    continue
+                if child is None and getattr(type(value), name, ...) is None:
+                    continue
+                fields.append(name + '=' + render(child))
+            return type(value).__name__ + '(' + ', '.join(fields) + ')'
+        if isinstance(value, list):
+            return '[' + ', '.join(render(child) for child in value) + ']'
+        return repr(value)
+
+    return render(node)
+
+
 class CompilerPolicy:
     """Extract constants and verify the pure basename helper AST, without imports."""
 
@@ -113,7 +141,7 @@ class CompilerPolicy:
             node = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
             if function == '_compile_in_dir':
                 node = legacy_file_behavior(node)
-            if hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest() != expected_hash:
+            if hashlib.sha256(_policy_ast_dump_v1(node).encode()).hexdigest() != expected_hash:
                 raise ValueError("Compiler file-writing behavior changed; review required")
         assigns = {n.targets[0].id: n for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)}
         reserved = assigns["_MAIN_RESERVED_NAMES"].value
@@ -147,7 +175,7 @@ def expected(name):
         cli = root / "backend/app/services/arduino_cli.py"
         cli_raw = cli.read_bytes()
         cli_fn = next(n for n in ast.walk(ast.parse(cli_raw)) if isinstance(n, ast.AsyncFunctionDef) and n.name == "compile")
-        if hashlib.sha256(ast.dump(cli_fn, include_attributes=False).encode()).hexdigest() != "58c4fd9f87d4aedfe6ef19e2a907075ae52bb5cea73ae3db6ff986025ff562e9":
+        if hashlib.sha256(_policy_ast_dump_v1(cli_fn).encode()).hexdigest() != "58c4fd9f87d4aedfe6ef19e2a907075ae52bb5cea73ae3db6ff986025ff562e9":
             raise ValueError("Arduino sketch promotion changed")
         self.sources.append({"path": cli.relative_to(root).as_posix(), "line": cli_fn.lineno, "sha256": hashlib.sha256(cli_raw).hexdigest()})
 
