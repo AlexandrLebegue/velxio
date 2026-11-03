@@ -281,3 +281,106 @@ docker inspect "$ORIGINAL_NAME" > "$ROLLBACK_CONTEXT/rollback-inspect.json"
 ```
 
 Comparer les mounts et `HostConfig.PortBindings` au JSON original : `80→3080`, `8002→8002` avec **mêmes HostIp**, mêmes volumes/binds et accès. Nginx original ne sert que son bloc80 : le port8002 reste sans listener tant que le wrapper historique n'a pas été rétabli. Restaurer l'état enabled/active du **wrapper exact sauvegardé** uniquement après vérification de son unité : elle doit viser ce nom de conteneur, et ne pas relancer l'ancien entrypoint ni un setup. Si elle vise l'ancien ID immuable ou comporte des actions non revues, arrêter la procédure et signaler le blocage ; ne pas modifier l'unité hors autorisation. Aucun superviseur supposé. Conserver les données actuelles ; aucune suppression de volume, aucun `docker rm -v`, aucune restauration automatique des snapshots.
+
+## Rebuild 20261103b
+
+Preuve manager E : Python **3.12.16**, image `velxio:compact-20261103`, `checks.py` du commit `44d7e891672b08159181c3c2cc8c70007edfd0e0` monté en lecture seule, policy vérifiée puis vrai build ESP32 `test_only:false` dans un conteneur `--network=none`. Les fichiers locaux fournis `~/review-proofs/e2/policy-probe-44d7e89.out` et `proof-e/smoke-proof.json` confirment six outils et le job `b_332262716bc24f73b32480c40651a7ca`, terminé avec succès. Firmware fusionné : **317024 octets**, SHA256 `d57a0ca09e8235da66a0efc382361779b9d8e7d2d037e6411dcbfb2a1ea59c23` ; le manager a également vérifié le magic `e9` aux offsets `0x1000` et `0x10000`. Ceci valide le run E avec montage du correctif ; cela ne prouve pas encore que l'image **20261103b** contient ce correctif sans montage.
+
+Les commandes suivantes sont une **recette manager**, non exécutée par l'agent. Elles reconstruisent uniquement l'image dérivée depuis les sources épinglées à `44d7e89`, puis la testent isolément ; aucun cutover, restart de production ou changement de volume/port n'est inclus. Utiliser l'inspect et les préimages **originaux** de la préparation 4c, et la même base locale immuable qui y est enregistrée. Ne pas remplacer cette base par l'image compact déjà surchargée : ses sources ne correspondraient plus aux préimages attendues.
+
+```sh
+set -eu
+umask 077
+CHECKOUT='<checkout manager autorisé contenant le commit 44d7e89>'
+SOURCE_COMMIT=44d7e891672b08159181c3c2cc8c70007edfd0e0
+SOURCE_DIR=/tmp/velxio-compact-source-20261103b
+CONTEXT_DIR=/tmp/mcp-compact-context-20261103b
+INSPECT_JSON='<chemin exact du container-inspect.json original sauvegardé>'
+PREIMAGES_JSON='<chemin exact du base-preimages.json original sauvegardé>'
+IMAGE_TAG=velxio:compact-20261103b
+# Répertoires nouveaux : ne pas écraser une préparation existante.
+test ! -e "$SOURCE_DIR"
+test ! -e "$CONTEXT_DIR"
+git -C "$CHECKOUT" cat-file -e "$SOURCE_COMMIT^{commit}"
+git -C "$CHECKOUT" worktree add --detach "$SOURCE_DIR" "$SOURCE_COMMIT"
+test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$SOURCE_COMMIT"
+python3 "$SOURCE_DIR/packaging/mcp-compact/prepare.py" \
+  --inspect "$INSPECT_JSON" --preimages "$PREIMAGES_JSON" \
+  --output "$CONTEXT_DIR" --image "$IMAGE_TAG"
+BASE_IMAGE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base_image"])' "$CONTEXT_DIR/manifest.json")
+docker image inspect "$BASE_IMAGE"
+docker build --pull=false --network=none --build-arg BASE_IMAGE="$BASE_IMAGE" \
+  -t "$IMAGE_TAG" "$CONTEXT_DIR"
+IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
+printf '%s\n' "$IMAGE_ID" > "$CONTEXT_DIR/built-image-id.txt"
+sha256sum "$CONTEXT_DIR/manifest.json" "$CONTEXT_DIR/create.json"
+```
+
+Relire `manifest.json` et `create.json` : ils conservent les bindings et mounts inspectés, mais **ne pas créer le conteneur de production à ce jalon**. Le payload inclut désormais le sérialiseur canonique v1 de `checks.py` ; les sources compilateur/template et les trois empreintes originales restent identiques. Aucun `pip/npm/apt`, install de core, image standalone ou téléchargement n'est prévu.
+
+**L'entrypoint de l'image ignore les arguments de commande** et démarre uvicorn/nginx. Pour un probe, un test ou le smoke, toujours fournir `--entrypoint` : ajouter seulement `python3 ...` après le nom de l'image ne suffit pas et lancerait le démarrage normal. Le probe ci-dessous surcharge l'entrypoint avec le **Python de l'app**, sans importer `app.main`, sans montage correctif de `checks.py` et sans appel compilateur :
+
+```sh
+EXPECTED_CHECKS_SHA=$(sha256sum "$SOURCE_DIR/backend/app/mcp/compact/checks.py" | cut -d' ' -f1)
+docker run --rm -i --pull=never --network=none --read-only \
+  --entrypoint /usr/local/bin/python3 -e PYTHONPATH=/app \
+  -e PYTHONDONTWRITEBYTECODE=1 -e EXPECTED_CHECKS_SHA="$EXPECTED_CHECKS_SHA" \
+  --tmpfs /tmp "$IMAGE_ID" - <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+from app.mcp.compact.checks import CompilerPolicy
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit('Expected the reviewed application Python 3.12 runtime')
+actual = hashlib.sha256(Path('/app/app/mcp/compact/checks.py').read_bytes()).hexdigest()
+if actual != os.environ['EXPECTED_CHECKS_SHA']:
+    raise SystemExit('Image checks.py differs from the pinned 44d7e89 source')
+policy = CompilerPolicy('/opt/velxio-mcp-source')
+print(json.dumps({'python':sys.version, 'compiler_policy':'verified',
+                  'checks_sha256':actual, 'prefix':policy.prefix,
+                  'reserved':sorted(policy.reserved), 'sources':policy.sources}, sort_keys=True))
+PY
+```
+
+Exiger une sortie `compiler_policy=verified` et un code 0 sous 3.12, puis conserver stdout/stderr avec l'ID d'image. Ce probe ne lance pas les hooks de startup : il n'atteste pas à lui seul de leur absence de tentative d'installation.
+
+Relance **réelle** du smoke `--build`, dans une instance neuve sans ports publiés, avec copies locales RO des bibliothèques et du cache Arduino. Les chemins hôte ci-dessous sont ceux des **copies de revue constatées**, jamais ceux des volumes de production actifs. Les deux montages de bibliothèques fournissent la même copie aux chemins `/review-libs` (inventaire) et `/root/Arduino/libraries` (startup/service). L'absence de fichier de cache doit rester visible, sans réparation ou installation :
+
+```sh
+REVIEW_SCRIPTS="$SOURCE_DIR/scripts"
+REVIEW_INPUT='<répertoire manager contenant hello-epaper-esp32.vlx et review.env relus>'
+LIBRARIES_COPY='<répertoire de COPIE contenant GxEPD2, Adafruit_GFX_Library, Adafruit_BusIO>'
+ARDUINO15_COPY='<répertoire de COPIE du contenu de /root/.arduino15>'
+ENV_FILE="$REVIEW_INPUT/review.env"
+EVIDENCE_DIR='<nouveau répertoire manager pour les preuves 20261103b>'
+SMOKE_CONTAINER=velxio-compact-smoke-20261103b
+mkdir -m 700 "$EVIDENCE_DIR"
+test -f "$ENV_FILE"
+test -f "$REVIEW_INPUT/hello-epaper-esp32.vlx"
+test -d "$LIBRARIES_COPY/GxEPD2"
+test -d "$LIBRARIES_COPY/Adafruit_GFX_Library"
+test -d "$LIBRARIES_COPY/Adafruit_BusIO"
+test -d "$ARDUINO15_COPY"
+# Conserver le conteneur et les preuves même en cas de retour non nul.
+set +e
+docker run --pull=never --name "$SMOKE_CONTAINER" --network=none \
+  --entrypoint /bin/bash \
+  --mount "type=bind,src=$REVIEW_SCRIPTS,dst=/review-scripts,readonly" \
+  --mount "type=bind,src=$REVIEW_INPUT,dst=/review-input,readonly" \
+  --mount "type=bind,src=$LIBRARIES_COPY,dst=/review-libs,readonly" \
+  --mount "type=bind,src=$LIBRARIES_COPY,dst=/root/Arduino/libraries,readonly" \
+  --mount "type=bind,src=$ARDUINO15_COPY,dst=/root/.arduino15,readonly" \
+  --env-file "$ENV_FILE" --env APP_PYTHON=/usr/local/bin/python3 \
+  --env REVIEW_ROOT=/tmp/smoke-20261103b \
+  "$IMAGE_ID" -c 'bash /review-scripts/mcp-compact-review-inventory.sh && . "$IDF_ROOT/export.sh" >&2 && exec "$APP_PYTHON" /review-scripts/mcp-compact-review-smoke.py --review-root "$REVIEW_ROOT" --app-root "$REVIEW_APP_ROOT" --source-root "$POLICY_SOURCE_ROOT" --inventory "$REVIEW_ROOT/inventory/inventory.json" --project "$PROJECT_VLX" --board-id "$PROJECT_BOARD_ID" --build --status-seconds 600 --max-polls 300' \
+  > "$EVIDENCE_DIR/smoke-20261103b.stdout" 2> "$EVIDENCE_DIR/smoke-20261103b.stderr"
+SMOKE_EXIT=$?
+set -e
+printf '%s\n' "$SMOKE_EXIT" > "$EVIDENCE_DIR/smoke-20261103b.exit"
+docker cp "$SMOKE_CONTAINER:/tmp/smoke-20261103b" "$EVIDENCE_DIR/proof-20261103b"
+docker inspect "$SMOKE_CONTAINER" > "$EVIDENCE_DIR/container-inspect.json"
+printf 'Smoke exit=%s; inspecter preuves et diagnostics avant toute suite\n' "$SMOKE_EXIT"
+```
+
+Le code 0 et `completed:true` ne sont acceptables qu'avec six outils, `structure_status=valid`, un build `state=done`, `success:true`, `test_only:false` et les tailles/hashes d'artefacts réellement relus. Ne pas exiger le SHA du firmware du run E comme un firmware copié de référence : le nouveau build doit produire ses propres preuves, avec `reproducibility_limited=true` et cache partagé off. Un code 1/3 ou une tentative de téléchargement/installation impose l'examen des logs ; aucun cutover ni modification de service n'est déclenché par cette recette. La borne de polling n'abrège pas le drain réel du propriétaire.
+
+Le warning E `-Wcomment` est localisé par `proof-e/.../live.log` dans **le template** `backend/app/services/esp-idf-template/main/main.cpp:6` : `The CMakeLists.txt globs *.cpp/*.c into SRCS`. Le texte `*.cpp/*.c` contient le début d'un commentaire bloc à l'intérieur du commentaire bloc déjà ouvert. Ce texte est absent du `.vlx` ; ses commentaires d'arguments `/*CS=*/` sont des commentaires fermés dans du code et ne causent pas ce warning. Sa suppression demande une correction du template et une revue de son hash approuvé, hors du périmètre de ce jalon ; la reconstruction depuis `44d7e89` le conserve. Aucun correctif de warning n'est prétendu appliqué au sketch.
