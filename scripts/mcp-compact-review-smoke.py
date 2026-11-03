@@ -7,7 +7,8 @@ HTTP socket, service control, firmware fixture, setup or install is used here.
 import argparse
 import asyncio
 import base64
-from contextlib import redirect_stdout
+from collections import deque
+from contextlib import contextmanager, redirect_stdout
 import hashlib
 import json
 import os
@@ -18,6 +19,97 @@ import time
 
 PROOF_OUTPUT = sys.stdout
 TOOLS = {'search_catalog', 'get_reference', 'save_project', 'check_project', 'build_project', 'read_artifact'}
+
+
+@contextmanager
+def proof_stdout():
+    """CLI process only: preserve a private proof FD, route FD1 to FD2 until exit.
+
+    redirect_stdout alone misses inherited subprocess FDs and native writes.
+    FD1 deliberately stays on stderr after this context, including atexit/C
+    buffer flushes; the private proof descriptor is non-inheritable.
+    """
+    global PROOF_OUTPUT
+    sys.stdout.flush()
+    sys.stderr.flush()
+    previous = PROOF_OUTPUT
+    with os.fdopen(os.dup(1), 'w', encoding='utf-8', buffering=1) as proof:
+        os.dup2(2, 1)
+        PROOF_OUTPUT = proof
+        try:
+            with redirect_stdout(sys.stderr):
+                yield
+        finally:
+            proof.flush()
+            sys.stderr.flush()
+            PROOF_OUTPUT = previous
+
+
+def exception_failure(error):
+    """Bounded exception graph: groups, explicit causes and implicit contexts.
+
+    Frames contain only file/line/function, no source text or locals. Each
+    exception is <=2 KiB of compact ASCII JSON; at most eight are traversed.
+    """
+    def clip(value, budget):
+        text = str(value)
+        truncated = len(text) > 2048
+        text = text[:2048]
+        while len(json.dumps(text, ensure_ascii=True).encode('ascii')) > budget:
+            text = text[:len(text) // 2]
+            truncated = True
+        return text, truncated
+
+    records, seen = [], set()
+    truncated, shared = False, False
+    def visit(exc, parent, relation):
+        nonlocal truncated, shared
+        if id(exc) in seen:
+            shared = True
+            return
+        if len(records) >= 8:
+            truncated = True
+            return
+        seen.add(id(exc))
+        index = len(records)
+        message, cut = clip(exc, 900)
+        kind, cut_kind = clip(type(exc).__qualname__, 120)
+        frames = deque(maxlen=3)
+        frame_count = 0
+        trace = exc.__traceback__
+        while trace is not None:
+            code = trace.tb_frame.f_code
+            frame, cut_frame = clip(f'{code.co_filename}:{trace.tb_lineno}:{code.co_name}', 256)
+            cut |= cut_frame
+            frames.append(frame)
+            frame_count += 1
+            trace = trace.tb_next
+        record = {'index':index, 'parent':parent, 'relation':relation, 'type':kind,
+                  'message':message, 'frames':list(frames),
+                  'truncated':cut or cut_kind or frame_count > 3}
+        while len(json.dumps(record, ensure_ascii=True, separators=(',', ':')).encode('ascii')) > 2048:
+            record['truncated'] = True
+            if record['frames']:
+                record['frames'].pop(0)
+            else:
+                record['message'] = record['message'][:len(record['message']) // 2]
+        records.append(record)
+        if isinstance(exc, BaseExceptionGroup):
+            if len(exc.exceptions) > 8:
+                truncated = True
+            for child_index, child in enumerate(exc.exceptions[:8]):
+                if len(records) >= 8:
+                    truncated = True
+                    break
+                visit(child, index, f'group[{child_index}]')
+        if exc.__cause__ is not None:
+            visit(exc.__cause__, index, '__cause__')
+        if exc.__context__ is not None:
+            visit(exc.__context__, index, '__context__')
+    visit(error, None, 'root')
+    return {'type':records[0]['type'], 'message':records[0]['message'],
+            'exceptions':records, 'truncated':truncated or any(r['truncated'] for r in records),
+            'shared_or_cyclic':shared, 'limits':{'exceptions':8, 'json_bytes_each':2048, 'frames_each':3}}
 
 
 def arguments(argv=None):
@@ -185,13 +277,18 @@ async def run(args):
         print(json.dumps(proof, sort_keys=True), flush=True, file=PROOF_OUTPUT)
         return 0 if proof['completed'] else 3
     except Exception as exc:
-        proof['failure'] = {'type':type(exc).__name__, 'message':str(exc)[:1000]}
+        proof['failure'] = exception_failure(exc)
         publish(); print(json.dumps(proof, sort_keys=True), flush=True, file=PROOF_OUTPUT); return 1
 
 
 if __name__ == '__main__':
-    args = arguments()
-    # Keep SDK/startup prints on stderr; stdout is JSON Lines proof output.
-    with redirect_stdout(sys.stderr):
-        result = asyncio.run(run(args))
+    # Process-level redirection also covers child/native startup and exit writes.
+    with proof_stdout():
+        try:
+            result = asyncio.run(run(arguments()))
+        except Exception as exc:
+            # Input/preflight errors before a proof file exists still emit JSON.
+            print(json.dumps({'completed':False, 'failure':exception_failure(exc)}, sort_keys=True),
+                  flush=True, file=PROOF_OUTPUT)
+            result = 1
     sys.exit(result)
