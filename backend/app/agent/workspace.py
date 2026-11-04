@@ -130,7 +130,7 @@ class Workspace:
                 total += size
                 if size > 262144 or count > 128 or total > 2 * 1024 * 1024:
                     raise AgentError("quota_exceeded", "Sources exceed the workspace limits")
-                with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW), "r", encoding="utf-8") as stream:
+                with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW), "r", encoding="utf-8", newline="") as stream:
                     content = stream.read(262145)
                 files.append({"name": name, "content": content})
             document["fileGroups"][group] = files

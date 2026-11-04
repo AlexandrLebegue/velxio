@@ -122,6 +122,16 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.session.workspace.work / saved['workspace']['active_file']).read_text(), source)
         self.assertEqual(self.session.workspace.document['boards'][0]['boardKind'], 'arduino-nano')
 
+    async def test_plain_source_round_trip_preserves_crlf_and_literal_escapes(self):
+        source = '// UTF-8: écran\r\nvoid setup() { Serial.begin(9600); Serial.println("quote \\n"); }\r\nvoid loop() {}\r\n'
+        saved = await self.runtime.call_tool(self.session, 'save_project', {'sketch':source})
+        self.assertTrue(saved['ok'], saved)
+        path = self.session.workspace.work / saved['workspace']['active_file']
+        self.assertEqual(path.read_bytes().decode('utf-8'), source)
+        document = self.session.workspace.capture()
+        board = document['boards'][0]
+        self.assertEqual(document['fileGroups'][board['activeFileGroupId']][0]['content'], source)
+
     async def test_starter_context_is_derived_from_shared_recipes_without_reading_ids(self):
         from app.mcp.compact.examples import RECIPES, recipe_metadata
         context = await self.runtime.project_context(self.session)

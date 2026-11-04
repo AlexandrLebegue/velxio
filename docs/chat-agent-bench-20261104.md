@@ -1,52 +1,81 @@
 # Integrated chat evaluation — 2026-11-04
 
-Scope: actual chat API, OpenCode adapter, project workspace and session-bound tools. External six-tool MCP results are a separate evaluation.
-The Qwen provider is reused from existing local configuration; no credentials or internal addresses are recorded here.
-Fresh conversation and workspace per case; one unchanged natural prompt from the five AVR MCP cases; no follow-up coaching; strictly sequential.
-Backend editor adapter acknowledges the real SSE/browser-result protocol and validates packaged native pads. It does not render a browser or implement a simulator.
-Compilation uses the genuine REST owner and installed inventory, followed by independent Arduino CLI compilation of the final source.
-Strict success requires compile, editor/document agreement, exact wiring/values and intact behavior reviewed against the prompt, plus the final build result being read.
-Runtime display, movement and electrical behavior are not established by compilation.
+Verdict: the final shared-core chat achieves 5/5 strict successes twice consecutively, with zero MCP errors and three MCP calls per project.
+Two reserved French validations also pass on the final engine, including editing an existing workspace while preserving a user header and its call.
+Final measured agent/recipe code: `5d82b099`. A subsequent workspace-only newline fix preserves CRLF; the measured LF workflow is unchanged and the exact round trip has a regression test.
 
-| Pass / case | MCP calls | Errors | Repeated identical calls >=3 | Seconds | Strict | Final build read |
-| --- | ---: | --- | --- | ---: | --- | --- |
-| P3 / B1 | 14 | 0 | [3] | 189.06 | True | True |
-| P3 / B2 | 10 | 0 | [] | 78.46 | True | True |
-| P3 / B3 | 11 | 0 | [] | 102.63 | True | True |
-| P3 / B4 | 16 | 0 | [3] | 116.03 | True | True |
-| P3 / B5 | 33 | 0 | [4] | 393.05 | True | True |
-| P4 / B1 | 3 | 0 | [] | 56.96 | True | True |
-| P4 / B2 | 3 | 0 | [] | 36.16 | True | True |
-| P4 / B3 | 4 | {'invalid_argument': 1} | [] | 49.35 | True | True |
-| P4 / B4 | 3 | 0 | [] | 38.93 | True | True |
-| P4 / B5 | 3 | 0 | [] | 47.39 | True | True |
-| P5 / B1 | 3 | 0 | [] | 38.24 | False | True |
-| P5 / B2 | 3 | 0 | [] | 127.6 | True | True |
-| P5 / B3 | 3 | 0 | [] | 40.07 | True | True |
-| P5 / B4 | 3 | 0 | [] | 162.44 | True | True |
-| P5 / B5 | 3 | 0 | [] | 88.3 | True | True |
-| P6 / V1 | 2 | 0 | [] | 37.79 | True | True |
-| P6 / V2 | 3 | 0 | [] | 37.83 | True | True |
+## Protocol and independent truth
+Actual settings/session/message/SSE/browser-result chat APIs and the real OpenCode adapter, using qwen3.8-27b from existing local connection configuration.
+Fresh conversation per case; one complete unchanged user prompt, no follow-up coaching; runs strictly sequential. Provider alias is velxio, as in the actual chat.
+Limits: 40 steps, 720 seconds, 8192 output tokens, 65536 context tokens. The final five-case runs fit the normal 20-step/300-second defaults too.
+Compilation uses the genuine sealed REST owner and verified local AVR inventory. Every final terminal build is test_only=false and matches the final workspace.
+An independent Arduino CLI compilation reads final stored source. Version/source-bound manual review checks native wiring, exact values, intact sketch and code behavior.
+Strict success requires all of those checks, editor/document agreement and observing the final successful build before conclusion. Compilation alone is insufficient.
+The backend editor adapter implements the actual event/acknowledgement protocol and packaged native pin validation, not browser rendering or an electrical simulator.
+Displayed pixels, LED timing and motor movement are not runtime-validated. Frontend bridge/circuit/execution tests are a separate check.
+Tokens below sum provider-reported totals, including cached context. Loops list identical MCP calls repeated at least three times. File calls and harness errors are counted separately.
 
-P3 (`d2830fcb`): 5/5 strict successes, errors [0,0,0,0,0]; calls [14,10,11,16,33]. Total 879.23 seconds.
-All five database/API exports confirm one exact prompt, qwen3.8-27b through the chat provider, and the correct OpenCode cwd.
-The construction/build confidence criterion is met once; repeated catalog browsing still makes this slower than the external MCP. No latency parity is claimed.
+| Pass/case | MCP/file calls | MCP errors | Harness errors | Loops | Tokens | Seconds | Strict | Final build read |
+| --- | ---: | --- | ---: | --- | ---: | ---: | --- | --- |
+| P3/B1 | 14/1 | 0 | 0 | [3] | 285361 | 189.06 | True | True |
+| P3/B2 | 10/1 | 0 | 0 | [] | 165059 | 78.46 | True | True |
+| P3/B3 | 11/1 | 0 | 0 | [] | 209493 | 102.63 | True | True |
+| P3/B4 | 16/0 | 0 | 0 | [3] | 248289 | 116.03 | True | True |
+| P3/B5 | 33/1 | 0 | 0 | [4] | 415813 | 393.05 | True | True |
+| P4/B1 | 3/1 | 0 | 0 | [] | 60968 | 56.96 | True | True |
+| P4/B2 | 3/1 | 0 | 0 | [] | 55553 | 36.16 | True | True |
+| P4/B3 | 4/1 | invalid_argument:1 | 0 | [] | 69192 | 49.35 | True | True |
+| P4/B4 | 3/0 | 0 | 0 | [] | 44819 | 38.93 | True | True |
+| P4/B5 | 3/0 | 0 | 0 | [] | 47526 | 47.39 | True | True |
+| P5/B1 | 3/1 | 0 | 0 | [] | 44618 | 38.24 | False | True |
+| P5/B2 | 3/0 | 0 | 0 | [] | 50881 | 127.6 | True | True |
+| P5/B3 | 3/0 | 0 | 0 | [] | 44901 | 40.07 | True | True |
+| P5/B4 | 3/0 | 0 | 0 | [] | 52100 | 162.44 | True | True |
+| P5/B5 | 3/0 | 0 | 0 | [] | 52351 | 88.3 | True | True |
+| P6/V1 | 2/3 | 0 | 0 | [] | 64686 | 37.79 | True | True |
+| P6/V2 | 3/0 | 0 | 0 | [] | 44147 | 37.83 | True | True |
+| P7/B1 | 3/0 | 0 | 0 | [] | 44790 | 44.1 | True | True |
+| P7/B2 | 3/1 | 0 | 0 | [] | 57163 | 41.79 | True | True |
+| P7/B3 | 3/1 | 0 | 0 | [] | 58484 | 43.26 | True | True |
+| P7/B4 | 3/1 | 0 | 0 | [] | 58272 | 41.69 | True | True |
+| P7/B5 | 3/1 | 0 | 0 | [] | 59978 | 46.79 | True | True |
+| P8/B1 | 3/0 | 0 | 0 | [] | 45666 | 40.47 | True | True |
+| P8/B2 | 3/1 | 0 | 0 | [] | 64382 | 149.74 | True | True |
+| P8/B3 | 3/0 | 0 | 0 | [] | 44322 | 35.29 | True | True |
+| P8/B4 | 3/0 | 0 | 0 | [] | 38137 | 67.02 | True | True |
+| P8/B5 | 3/1 | 0 | 0 | [] | 57913 | 104.15 | True | True |
+| P9/V1 | 2/3 | 0 | 0 | [] | 65408 | 67.62 | True | True |
+| P9/V2 | 3/1 | 0 | 0 | [] | 58124 | 129.63 | True | True |
 
-## Changes and failures found
-- `ac0b2ab4`: conversation-bound shared ProjectStore/ProjectChecker/BuildService, native source paths, recipe application through editor validation, real authenticated compiler context and visible build failures.
-- `d2830fcb`: recovery after a rejected source update, version-bound build results, serialized project operations and explicit model context/output limits.
-- Preflight smoke: real chat saved/applied the LED circuit and independently compiled it; one malformed/overlong generation reached about 32000 output tokens. This uncommitted smoke is not a frozen baseline.
-- Infrastructure-only P2: OpenCode rejected incomplete model limit configuration before any Qwen request. Context/output must be configured together. Five attempts were excluded from Qwen success rates; configuration creation was then verified without a model call.
-- P3 remaining bottleneck: repeated search_catalog calls omitted query and browsed the first page. B5 needed 33 MCP calls despite eventually producing a correct project.
-- Next candidate: advertise all reviewed catalog starters and their actual parameter schemas in the initial chat context; require explicit search intent; bound informational check details while preserving errors, warnings and full report artifacts. Measured P4 (`3c0af840`): 5/5 strict, errors [0,0,1,0,0] and no loops. Calls [3, 3, 4, 3, 3], total 228.79 seconds; no generation reached its limit. P5 confirmation failed strict fidelity: 4/5, despite zero MCP errors. LED used 1000 ms per phase (0.5 Hz) while claiming 1 Hz. The two-pass criterion is not yet met.
+## Scores and measured effects
+P3: 5/5 strict; calls [14, 10, 11, 16, 33]; errors [0, 0, 0, 0, 0]; total 879.23 seconds.
+P4: 5/5 strict; calls [3, 3, 4, 3, 3]; errors [0, 0, 1, 0, 0]; total 228.79 seconds.
+P5: 4/5 strict; calls [3, 3, 3, 3, 3]; errors [0, 0, 0, 0, 0]; total 456.65 seconds.
+P7: 5/5 strict; calls [3, 3, 3, 3, 3]; errors [0, 0, 0, 0, 0]; total 217.63 seconds.
+P8: 5/5 strict; calls [3, 3, 3, 3, 3]; errors [0, 0, 0, 0, 0]; total 396.67 seconds.
+P7 and P8 are the two qualifying final passes on unchanged engine code. All ten source/circuit snapshots match independently reviewed correct versions; no contradictory success was found.
+P3 was the first complete shared-core chat implementation, not an old-production-chat baseline. Calls fell from 84 to 15 for five cases; time changed from 879.23 s to 217.63/396.67 s.
+P5 demonstrates the importance of independent review: it had zero MCP errors and compiled every project, but one valid sketch blinked at 0.5 Hz while Qwen claimed 1 Hz. It is scored 4/5, with one false completion.
+Reserved P6 and final P9: both 2/2 strict; zero MCP errors. V1 edits Nano blink timing in cwd and retains user_note.h byte-for-byte plus userNote(); V2 uses Uno and a sliding potentiometer for servo control. No changes were tuned from those validation outcomes.
 
-## Verification and limits
-Backend agent suite: 40 tests OK before the next optimization; compact MCP suite: 180 tests OK; targeted frontend agent bridge/circuit/execution/events: 31 tests OK.
-Global TypeScript check fails identically on the original baseline: 357 diagnostics, no new diagnostic after normalizing worktree paths. These existing failures are not represented as a passing build.
-Small sample, one model and one harness; no separate old-chat baseline or individual-feature ablation. Raw sessions, settings and compiler evidence remain outside Git.
-No deployment, push, SSH or production access. ESP32 templates, compile lane and immediate simulation refusal are retained; actual ESP32 execution/display is not tested here.
+## Changes and exact failure families
+- `ac0b2ab4`: shared compact catalog/store/check/build core behind conversation-bound tools; project identities stay server-side, sources stay in cwd, real compiler admission retains the authenticated chat owner.
+- `d2830fcb`: recover after rejected editor updates, serialize mutations, bind build results to the source actually compiled, expose failures in the timeline, configure both required model limits.
+- `3c0af840`: advertise every reviewed catalog starter and its real parameters in initial context. No benchmark prompt matching. Require explicit query for other searches and summarize informational check details with full report artifacts retained.
+- `5d82b099`: frequency_hz means complete on/off cycles; delay_ms explicitly means each phase. Generated nominal timing is returned for comparison. Centered e-paper removes extra demo labels while preserving native SPI/control pins and default mode.
+- Repeated catalog browsing came from calls such as `search_catalog(kind="example",limit=10,offset=0)` with query omitted. Initial starter context removes that discovery loop; missing-query errors now explain the exact missing field.
+- P4 B3 recoverable invalid_argument: `save_project(from_example="example:uno-servo",parameters={"PWM":9,"analog_pin":"A0","board":"arduino-nano","control":"potentiometer","input_component":"potentiometer","sample_ms":15})`. PWM belongs inside pins. The model repaired it; final passes have no such errors.
+- P5 wrong-rate call: `save_project(from_example="example:blink-led",parameters={"board":"arduino-uno","delay_ms":1000,"external_led":true,"led_color":"red","pins":{"LED":13},"resistance_ohms":220})`. This is API-valid but gives a 2000 ms cycle. Explicit Hz and returned source-derived timing address the ambiguity.
+- An initial uncommitted LED smoke used about 32000 output tokens in one malformed/overlong generation. It is not a frozen baseline. Output is now bounded; neither final pass hit its generation limit.
+- Infrastructure-only P2 attempts failed before Qwen requests because OpenCode requires context and output limits together. These five attempts are excluded from model success rates; session creation with the corrected configuration was separately verified without a model call.
 
-P6 reserved French validations: 2/2 strict. Existing Nano source was edited in cwd and its user header/call preserved; an Uno/sliding-potentiometer/servo project was created correctly. These outcomes were not used for tuning.
-
-Next correction: shared blink recipes expose frequency_hz for full cycles, document delay_ms as per-phase, and return nominal source-derived timing. Exact P5 wrong-rate call: `{"from_example":"example:blink-led","parameters":{"board":"arduino-uno","delay_ms":1000,"external_led":true,"resistance_ohms":220}}`. No API error was expected: the supplied parameters were valid but did not fulfill the user request.
-Centered e-paper recipes now remove extra demo labels while preserving legacy/default mode and native ESP32 pins. This is a deterministic source-fidelity fix, not a display/runtime validation.
+## Verification, deployment prerequisites and limits
+Backend: test_agent*.py — 44 tests OK; test_mcp_compact*.py — 182 tests OK, including native ESP32 pins and source fidelity.
+Deterministic six-tool scenarios remain 5/5/5 calls with zero unexpected errors; their checked-in byte-size measurements were refreshed after recipe metadata changed.
+Frontend: four targeted agent suites, 31 tests OK; formatting OK; Vite production bundle built successfully in 9.53 s.
+Global TypeScript check still reports the same 357 diagnostics on the original baseline after normalizing worktree paths. It is not reported as passing.
+AVR requires owner opt-in and a verified installed-cache inventory. The private AVR-only benchmark inventory must not replace production ESP32 evidence when enabling both targets.
+ESP32 offline compilation and immediate simulation refusal are retained. Centered e-paper source is corrected and tested deterministically; actual ESP32 build/display needs its IDF host and is not claimed here.
+This is one model/harness and a small sample, with order/cache/reasoning-time variation. There is no old-chat A/B baseline or per-feature causal ablation. Broader custom projects and real browser execution remain separate validation work.
+All benchmark servers and managed harnesses were stopped. Raw sessions, credentials, compiler logs and snapshots remain outside Git. No SSH, production access, deployment or push was performed.
+At the user request, no further Qwen calls are made; remaining work is offline reporting and committing.

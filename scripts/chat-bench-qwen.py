@@ -313,4 +313,8 @@ if __name__ == '__main__':
     parser.add_argument('--arduino-cli', type=Path, required=True)
     parser.add_argument('--toolchain', type=Path, required=True)
     parser.add_argument('--inventory', type=Path, required=True)
-    asyncio.run(main(parser.parse_args()))
+    args = parser.parse_args()
+    unknown = set(args.cases.split(',')) - {'B1','B2','B3','B4','B5','V1','V2'}
+    if unknown:
+        parser.error('This chat bench supports AVR cases B1..B5 and V1/V2 only; ESP32 requires a separate IDF evaluation.')
+    asyncio.run(main(args))
