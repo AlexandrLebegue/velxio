@@ -349,15 +349,13 @@ def patch(doc, changes):
 def validate_save_arguments(arguments):
     if not isinstance(arguments, dict):
         invalid('', arguments, 'save_project argument object')
-    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version', 'sketch', 'board', 'board_id', 'libraries', 'from_example', 'parameters', 'connect'}:
+    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version', 'sketch', 'board', 'board_id', 'libraries', 'from_example', 'parameters'}:
         invalid(pointer('', field), arguments[field], 'known save argument: document, changes, sketch, from_example and their documented options')
-    if 'connect' in arguments and (not isinstance(arguments['connect'], list) or not 1 <= len(arguments['connect']) <= 128 or any(not isinstance(item, str) or not 1 <= len(item) <= 512 for item in arguments['connect'])):
-        invalid('/connect', arguments['connect'], '1..128 named connections, each instance.pin -> instance.pin (max 512 characters)')
     updating = 'project_id' in arguments
     if ('expected_version' in arguments) != updating:
         field = 'expected_version' if updating else 'project_id'
         invalid('/' + field, MISSING, 'required together: project_id and expected_version for updates')
-    if sum(field in arguments for field in ('document', 'changes', 'sketch', 'from_example')) != (0 if updating and 'connect' in arguments and not arguments.keys() & {'document', 'changes', 'sketch', 'from_example'} else 1):
+    if sum(field in arguments for field in ('document', 'changes', 'sketch', 'from_example')) != 1:
         invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document, changes, sketch or from_example')
     if 'from_example' in arguments:
         text(arguments['from_example'], maximum=240, path='/from_example')
@@ -555,7 +553,7 @@ class ProjectStore:
         def run():
             raw = validate_save_arguments(arguments)
             sketch_info = None
-            if arguments.keys() & {'sketch', 'from_example', 'connect'}:
+            if 'sketch' in arguments or 'from_example' in arguments:
                 if self.catalog is None:
                     from .catalog import Catalog
                     self.catalog = Catalog.from_snapshot(Path(__file__).with_name('catalog.snapshot.json'))
@@ -572,9 +570,6 @@ class ProjectStore:
                     doc, board_id, name = sketch_document(self.catalog, arguments)
                     raw = validate_document(doc)
                     sketch_info = (board_id, name)
-            if 'connect' in arguments and 'project_id' not in arguments:
-                from .connections import connect_document
-                raw = validate_document(connect_document(self.catalog, json.loads(raw), arguments['connect']))
             updating = "project_id" in arguments
             project_id = arguments.get("project_id")
             if not updating:
@@ -590,7 +585,7 @@ class ProjectStore:
                                 fail("integrity_error", "Invalid project head")
                             if head["version"] != arguments["expected_version"]:
                                 fail("version_conflict", "Project head differs from expected_version")
-                            if arguments.keys() & {"changes", "sketch", "connect"}:
+                            if "changes" in arguments or 'sketch' in arguments:
                                 old = self._read(versions, head["version"] + ".vlx")
                                 if hashlib.sha256(old).hexdigest() != head["version"]:
                                     fail("integrity_error", "Snapshot hash mismatch")
@@ -598,13 +593,8 @@ class ProjectStore:
                                     doc, board_id, name = sketch_document(self.catalog, arguments, json.loads(old))
                                     raw = validate_document(doc)
                                     sketch_info = (board_id, name)
-                                elif 'changes' in arguments:
+                                else:
                                     raw = validate_document(patch(json.loads(old), arguments["changes"]))
-                                elif raw is None:
-                                    raw = old
-                            if 'connect' in arguments:
-                                from .connections import connect_document
-                                raw = validate_document(connect_document(self.catalog, json.loads(raw), arguments['connect']))
                         version = hashlib.sha256(raw).hexdigest()
                         try:
                             previous = self._read(versions, version + ".vlx")

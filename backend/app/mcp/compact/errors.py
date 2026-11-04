@@ -59,8 +59,6 @@ ACTIONS = {
     'not_found': 'Use an ID returned by a successful tool call. For catalog IDs, call search_catalog; for project/build/artifact IDs, use their creation response.',
     'ambiguous_id': 'Choose one explicit namespaced ID from expected and call get_reference.',
     'version_conflict': 'Reconcile the current project version before saving; use its version as expected_version. Do not repeat the stale update.',
-    'connection_duplicate': 'Remove the duplicate or self-connection from connect; reuse the existing wire, then call save_project.',
-    'pin_role_conflict': 'Choose pins with compatible roles from expected, correct connect, then call save_project.',
     'quota_exceeded': 'Reduce the requested size or release local storage through the application, then retry once; do not repeat the same oversized request.',
     'unsupported': 'Use the supported alternatives listed in expected. Do not poll or repeat an unsupported action.',
     'owner_integration_required': 'Ask the application owner to enable the offline REST build binding; do not poll or attempt installation.',
