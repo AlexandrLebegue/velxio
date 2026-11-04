@@ -106,7 +106,10 @@ export function mergeAgentDocuments(
     conflicts.push('/' + path.map((v) => v.replaceAll('~', '~0').replaceAll('/', '~1')).join('/'));
     return clone(current);
   }
-  const document = merge(base, proposed, local, []) as VlxPayload;
+  // The wire protocol omits undefined properties. Native editor snapshots
+  // contain them, so normalize all three sides to the actual JSON contract.
+  const json = (value: VlxPayload): VlxPayload => JSON.parse(JSON.stringify(value));
+  const document = merge(json(base), json(proposed), json(local), []) as VlxPayload;
   if (conflicts.length && !preferLocal) throw new AgentMergeConflict(conflicts);
   return { document, conflicts };
 }

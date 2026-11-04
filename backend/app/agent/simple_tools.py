@@ -21,7 +21,7 @@ def array(items, maximum=64):
 
 
 CHAT_TOOLS = {
-    'search_component': ('Find components or boards by a short query. Results include exact IDs, real pins, defaults and known libraries; no reference read needed. Use next_offset for more results.',
+    'search_component': ('Find components or boards by a short query. Results include exact IDs, real pins, defaults and possible libraries; no reference read needed. Use next_offset for more results.',
         obj({'query':TEXT,'kind':{'enum':['all','component','board'],'default':'all'},
              'limit':{'type':'integer','minimum':1,'maximum':5,'default':3},
              'offset':{'type':'integer','minimum':0,'maximum':100000,'default':0}}, ('query',))),
@@ -71,7 +71,7 @@ def normalize_chat(name, arguments):
 def reference_card(result):
     data=result['data']
     return {'id':result['id'], **{k:data[k] for k in ('name','metadataId','boardKind','pins','attrs','defaults','protocol','languages') if k in data},
-            'libraries':[{'name':v['name']} for v in data.get('libraries',[])][:8] if isinstance(data.get('libraries'),list) else 'unknown'}
+            'library_candidates':[{'name':v['name']} for v in data.get('libraries',[])][:8] if isinstance(data.get('libraries'),list) else 'unknown'}
 
 
 class SimpleChatTools:
@@ -235,6 +235,8 @@ class SimpleChatTools:
         # the following call. Explicit restart must not duplicate a live build.
         if previous and previous['revision']==current and previous['mode']=='compile' and (previous.get('result') or {}).get('state')=='compiling':
             return await self.compile(args,previous)
+        if previous and previous['mode']=='editor_compile' and previous['revision']==current and action!='restart' and (action=='status' or previous.get('result',{}).get('state')=='compiling' or args.get('simulate',True) is False or self.runtime.execution_refusal(self.session)):
+            return await self.editor_compile(args,previous)
         same_mode=previous and (action=='status' or previous['mode']==('compile' if args.get('simulate',True) is False or self.runtime.execution_refusal(self.session) else 'simulation'))
         if action!='restart' and same_mode and previous['revision']==current:
             if previous['mode']=='compile':
@@ -243,6 +245,28 @@ class SimpleChatTools:
                 delay=500 if previous['result'].get('state')=='running' else min(15000,int(args.get('wait_seconds',20)*1000))
                 result=await self.runtime.browser_command(self.session,'observe',duration_ms=args.get('duration_ms',delay))
                 return self.simulation_result(result,current)
+        dependency_resolution=None
+        if self.session.editor_capabilities.get('compile'):
+            from .libraries import resolve
+            value=self.session.workspace.capture()
+            board=next(b for b in value['boards'] if b['id']==value['activeBoardId'])
+            if board.get('languageMode','arduino')=='arduino':
+                definition=self.runtime.get_catalog()._entries.get('board:'+board['boardKind'],{})
+                architecture=definition.get('architecture')
+                if not architecture:
+                    fqbn=definition.get('fqbn','')
+                    architecture=fqbn.split(':')[1] if ':' in fqbn else None
+                if architecture:
+                    hints=[]
+                    for part in value['components']:
+                        reference=self.runtime.get_catalog().get_reference(id='component:'+part['metadataId'])
+                        hints.extend(v['name'] for v in reference.get('data',{}).get('libraries',[]) if isinstance(v,dict))
+                    dependency_resolution=await resolve(value['fileGroups'][board['activeFileGroupId']],board.get('libraries',[]),architecture,
+                        user=self.session.compile_user,allow_install=True,hints=hints)
+                    if dependency_resolution['libraries']!=board.get('libraries',[]):
+                        board['libraries']=dependency_resolution['libraries']
+                        applied=await self.publish(value)
+                        if not applied.get('ok'):return applied
         checked=await self.runtime._call_tool(self.session,'check_project',{})
         if not checked.get('ok'):return checked
         if checked.get('structure_status')=='invalid':
@@ -257,6 +281,10 @@ class SimpleChatTools:
         if not applied.get('ok'):return applied
         current=self.session.workspace.revision
         if args.get('simulate',True) is False or self.runtime.execution_refusal(self.session):
+            if self.session.editor_capabilities.get('compile'):
+                self.last_run={'mode':'editor_compile','revision':current,'checks':{'structure_status':checked['structure_status']},
+                    'dependency_resolution':dependency_resolution}
+                return await self.editor_compile(args,self.last_run)
             self.last_run={'mode':'compile','revision':current,'build_id':None,'result':None,
                            'checks':{'structure_status':checked['structure_status']}}
             return await self.compile(args,self.last_run)
@@ -265,6 +293,18 @@ class SimpleChatTools:
         self.last_run={'mode':'simulation','revision':executed,'result':result,
                        'checks':{'structure_status':checked['structure_status']}}
         return self.simulation_result(result,executed)
+
+    async def editor_compile(self,args,record):
+        result=await self.runtime.browser_command(self.session,'compile',document=self.session.workspace.document,
+            revision=record['revision'],wait_seconds=args.get('wait_seconds',20),restart=args.get('action')=='restart')
+        executed=result.get('applied_revision',record['revision'])
+        record['revision']=executed
+        value=self.simulation_result(result,executed)
+        value['simulation']={'state':'unsupported' if self.runtime.execution_refusal(self.session) else 'not_requested','confirmed':False}
+        if record.get('dependency_resolution'):value['dependencies']=record['dependency_resolution']
+        if result.get('state')=='compiled':
+            value['next_action']='Compilation succeeded for current files. Simulation and behavior have not been verified.'
+        return value
 
     def simulation_result(self, result, revision):
         matches=revision==project_revision(self.session.workspace.capture())

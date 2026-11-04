@@ -65,7 +65,7 @@ vi.mock('../utils/vlxFile', () => ({
       x: board.x,
       y: board.y,
       activeFileGroupId: board.activeFileGroupId,
-      ...(board.libraries === undefined ? {} : { libraries: board.libraries }),
+      libraries: board.libraries,
     })),
     fileGroups: fixture.files,
     components: [],
@@ -194,6 +194,32 @@ describe('project-scoped agent bridge', () => {
     expect(fixture.files.sketch[0].content).toContain('delay(7)');
     expect(result.applied_revision).toBe(await projectRevision());
     fixture.board.x = 0;
+  });
+
+  it('updates and clears a manifest omitted in JSON without recreating the board engine', async () => {
+    const base = JSON.parse(JSON.stringify(snapshotForAgent()));
+    const document = structuredClone(base);
+    document.boards[0].libraries = ['Servo'];
+    const result = await handleAgentBrowserCommand({
+      command_id: 'undefined-manifest',
+      action: 'apply',
+      document,
+      base_document: base,
+      expected_revision: await projectRevision(base),
+    });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(fixture.board.libraries).toEqual(['Servo']);
+    const next = structuredClone(snapshotForAgent());
+    next.boards[0].libraries = [];
+    const cleared = await handleAgentBrowserCommand({
+      command_id: 'empty-manifest',
+      action: 'apply',
+      document: next,
+      base_document: snapshotForAgent(),
+      expected_revision: await projectRevision(),
+    });
+    expect(cleared.ok, JSON.stringify(cleared)).toBe(true);
+    expect(fixture.board.libraries).toEqual([]);
   });
 
   it('reports the real revision after the compiler completes the library manifest', async () => {

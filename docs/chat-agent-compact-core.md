@@ -102,3 +102,21 @@ push or deployment is part of this change.
 Verified on this change: 63 agent tests, 182 compact MCP tests, 32 frontend
 agent tests and four benchmark/provenance tests passed. The Vite production
 bundle builds; targeted frontend lint and formatting checks also pass.
+
+## Automatic editor reconciliation and native dependency resolution
+
+Optional editor fields are compared after JSON normalization. Independent
+manual and agent edits merge automatically; real overlapping fields preserve
+manual edits and identify a conflict. Editing board metadata, including the
+library manifest, does not recreate the MCU. Explicit empty manifests survive
+loading. Project changes cancel pending agent results.
+
+A capable editor advertises application-native compilation. Chat `run` infers
+canonical library identities from actual source imports and installed headers,
+resolves transitive dependencies, and uses the same managed library installer,
+owner policy and compiler as the toolbar. Registry lookup uses the cached index;
+unknown/private declarations retain their exact names/version pins. Ambiguous
+headers report candidates. Related example dependencies are informational
+`library_candidates`, not mandatory libraries for every use of a component.
+No source rewrite or component-specific solution recipe is performed.
+The older adapter fallback and the external compact MCP offline paths remain.

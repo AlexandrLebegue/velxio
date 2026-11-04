@@ -41,6 +41,7 @@ class Session:
     active_turn: str = ""
     browser_revision: str = ""
     editor_document: Any = None
+    editor_capabilities: dict = field(default_factory=dict)
     browser_seen: float = 0
     browser_id: str = ""
     stream_id: str = ""
@@ -123,6 +124,7 @@ class AgentRuntime:
                                    "agent_run": "run() saves files, checks the circuit and uses the editor's compile/load/execute pipeline. run(simulate=false) compiles only. Pending results are resumed by run(), without a build ID. Only confirmed=true establishes startup, not functional correctness."}}
         if inspection is not None:
             if inspection.get("ok"):
+                session.editor_capabilities = inspection.get("execution", {})
                 result["pinouts"] = inspection.get("pinouts", {})
                 session.available_boards = {board["boardKind"]: board for board in inspection.get("available_boards", [])}
                 result["capabilities"]["available_boards"] = list(session.available_boards.values())
@@ -432,7 +434,7 @@ class AgentRuntime:
             data={'base_document':copy.deepcopy(session.editor_document or session.workspace.document),**data}
         self.emit(session, "browser.command", {"command_id": command_id, "action": action, "expected_revision": session.browser_revision, **data})
         try:
-            result = await asyncio.wait_for(future, self.settings.read(session.owner).timeout_seconds if action == "run" else 20)
+            result = await asyncio.wait_for(future, self.settings.read(session.owner).timeout_seconds if action == "run" else max(20, data.get("wait_seconds", 20) + 10) if action == "compile" else 20)
             if result.get('ok') and isinstance(result.get('editor_document'),dict):
                 observed=checked_document(result['editor_document'])
                 if project_revision(observed)!=result.get('editor_revision'):

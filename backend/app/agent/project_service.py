@@ -22,6 +22,8 @@ class ChatProjectService:
         libraries, tools = CompactRuntime(None).inventories()
         self.checker = ProjectChecker(self.store, runtime.get_catalog(), inventory=libraries,
                                       source_root=Path(__file__).resolve().parents[3])
+        self.editor_checker = ProjectChecker(self.store, runtime.get_catalog(), inventory=None,
+                                      source_root=Path(__file__).resolve().parents[3])
         self.builds = BuildService(self.store, self.checker, toolchains=tools)
         self.current = None
         self.build_revisions = {}
@@ -134,7 +136,8 @@ class ChatProjectService:
         if name == 'check_project':
             if set(arguments) - {'project_id', 'version'}:
                 raise AgentError('invalid_argument', 'Call check_project() with no arguments.')
-            result = self.checker.check_project(project_id=saved['project_id'], version=saved['version'])
+            checker = self.editor_checker if self.session.editor_capabilities.get('compile') else self.checker
+            result = checker.check_project(project_id=saved['project_id'], version=saved['version'])
             if result.get('ok'):
                 issues = result['issues']
                 result['informational_codes'] = sorted({i['code'] for i in issues if i['severity'] not in ('error','warning')})

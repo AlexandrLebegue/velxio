@@ -149,6 +149,30 @@ class SimpleChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(again['ok']);self.assertEqual([a for a,_ in self.commands].count('run'),1)
         self.assertEqual(self.commands[-1][0],'observe')
 
+    async def test_native_compile_resolves_real_imports_and_never_uses_offline_inventory(self):
+        await self.board()
+        self.session.editor_capabilities={'compile':True}
+        self.source().write_text('#include <Servo.h>\nvoid setup() {}\nvoid loop() {}\n')
+        async def native(session,action,**data):
+            if action=='compile':return {'ok':True,'state':'compiled','compiled':True,'confirmed':False,
+                'applied_revision':session.workspace.revision}
+            return await self.editor(session,action,**data)
+        self.runtime.browser_command=native
+        with patch('app.agent.libraries.resolve',new=AsyncMock(return_value={'libraries':['Servo'],'resolved':[{'name':'Servo'}],'installed':[],'unknown_headers':[]})) as resolver:
+            result=await self.call('run',simulate=False)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['state'],'compiled');self.assertFalse(result['confirmed'])
+        self.assertFalse(result['behavior_verified'])
+        self.assertEqual(self.session.workspace.document['boards'][0]['libraries'],['Servo'])
+        self.assertEqual(resolver.await_args.args[2],'avr')
+        self.assertEqual(self.session.simple_tools.last_run['mode'],'editor_compile')
+        self.assertNotIn('Servo.h',self.source().read_text().splitlines()[-1])
+        # An explicit simulation request after compile is a real run, not a
+        # cached compile response masquerading as simulation startup.
+        with patch('app.agent.libraries.resolve',new=AsyncMock(return_value={'libraries':['Servo']})):
+            simulated=await self.call('run',simulate=True)
+        self.assertTrue(simulated['confirmed'],simulated)
+
     async def test_broken_source_blocks_run_before_any_compile_and_retains_file(self):
         await self.board();source='// void setup() {} void loop() {}'
         self.source().write_text(source);self.commands.clear()

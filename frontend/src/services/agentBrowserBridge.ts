@@ -1,3 +1,4 @@
+import { executeAgentCompile, cancelAgentCompile } from './agentCompile';
 import { useSimulatorStore } from '../store/useSimulatorStore';
 import { useEditorStore } from '../store/useEditorStore';
 import { useCompileLogsStore } from '../store/useCompileLogsStore';
@@ -26,6 +27,7 @@ const pending = new Map<string, Promise<Record<string, unknown>>>();
 let editorEpoch = 0;
 export function invalidateAgentEditorSession(): void {
   editorEpoch++;
+  cancelAgentCompile();
 }
 export function agentEditorEpoch(): number {
   return editorEpoch;
@@ -47,13 +49,13 @@ export async function applyAgentSnapshot(
     document = mergeAgentDocuments(baseDocument, document, buildVlxPayload(), preferLocal).document;
   else if ((await projectRevision()) !== expectedRevision)
     throw new Error(
-      'Your project changed while the agent was working. Your manual edits have been preserved. Stop the agent, then send another message to synchronize them.',
+      'Your project changed while the agent was working. Your manual edits have been preserved. Retry the edit against the current project.',
     );
   // Unlike importVlxFile this keeps the identity used by cloud save/autosave.
   const current = structuredClone(buildVlxPayload());
   expectedRevision = await projectRevision(current);
   const boardConfig = (payload: VlxPayload) =>
-    payload.boards.map(({ serialBaudRate: _baud, ...board }) => board);
+    payload.boards.map(({ id, boardKind }) => ({ id, boardKind }));
   const boardsChanged = !agentValueEqual(boardConfig(current), boardConfig(document));
   const candidate = await prepareAgentCircuit(document);
   if (expectedEpoch !== editorEpoch)
@@ -87,14 +89,40 @@ export async function applyAgentSnapshot(
     !agentValueEqual(current.components, candidate.components) ||
     !agentValueEqual(normalizeAgentDocument(current).wires, candidate.wires);
   for (const board of sim.boards) {
+    const desired = candidate.boards.find((item) => item.id === board.id);
+    const before = current.boards.find((item) => item.id === board.id);
+    const compileKeys = ['languageMode', 'libraries', 'boardOptions', 'spiffsFiles'] as const;
+    const configChanged =
+      desired && before && compileKeys.some((key) => !agentValueEqual(before[key], desired[key]));
     if (
       !agentValueEqual(
         current.fileGroups[board.activeFileGroupId],
         candidate.fileGroups[board.activeFileGroupId],
-      )
+      ) ||
+      configChanged
     ) {
       if (board.running) sim.stopBoard(board.id);
       sim.updateBoard(board.id, { compiledProgram: null, compiledUf2: null });
+    }
+    if (desired) {
+      const patch: Partial<BoardInstance> = {};
+      for (const key of [
+        'name',
+        'x',
+        'y',
+        'activeFileGroupId',
+        'languageMode',
+        'rotation',
+        'libraries',
+        'boardOptions',
+        'spiffsFiles',
+        'sdFiles',
+      ] as const) {
+        const wanted = (desired as unknown as Record<string, unknown>)[key];
+        if (!agentValueEqual((board as unknown as Record<string, unknown>)[key], wanted))
+          Object.assign(patch, { [key]: wanted });
+      }
+      if (Object.keys(patch).length) sim.updateBoard(board.id, patch);
     }
     if (circuitChanged && board.running) sim.stopBoard(board.id);
   }
@@ -132,7 +160,12 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
     throw new AgentCircuitError('project_changed', 'The editor switched projects.');
   // Read-only metadata must not fail merely because the editor moved ahead.
   if (command.action === 'inspect_project')
-    return { ...inspectAgentProject(), document: observed, revision: observedRevision };
+    return {
+      ...inspectAgentProject(),
+      execution: { compile: true },
+      document: observed,
+      revision: observedRevision,
+    };
   if (command.action === 'describe_part')
     return describeAgentPart(String(command.kind), String(command.part_id));
   if (command.document && command.base_document) {
@@ -151,7 +184,8 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
       ok: false,
       error: {
         code: 'revision_conflict',
-        message: 'Manual project edits were preserved. Stop and synchronize before continuing.',
+        message:
+          'Manual project edits were preserved. Call components() to read the current project, then retry the edit.',
       },
     };
   if (command.action === 'validate_circuit') {
@@ -207,7 +241,7 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
       document: applied,
     };
   }
-  if (command.action === 'run') {
+  if (command.action === 'run' || command.action === 'compile') {
     const applied = await applyAgentSnapshot(
       command.document as VlxPayload,
       expected,
@@ -224,7 +258,10 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
           message: 'The loaded project does not match the requested revision.',
         },
       };
-    const result = await executeAgentProjectRun();
+    const result =
+      command.action === 'compile'
+        ? await executeAgentCompile(Number(command.wait_seconds ?? 20), command.restart === true)
+        : await executeAgentProjectRun();
     const actual = structuredClone(buildVlxPayload());
     // Only library discovery may change the compile manifest without changing
     // what the user/model asked to build. Other concurrent edits stay visible.
@@ -276,6 +313,7 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
   }
   if (command.action === 'stop') {
     cancelAgentProjectRun();
+    cancelAgentCompile();
     const sim = useSimulatorStore.getState();
     sim.boards.filter((board) => board.running).forEach((board) => sim.stopBoard(board.id));
     return { ok: true, state: 'stopped' };

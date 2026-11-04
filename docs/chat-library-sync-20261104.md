@@ -67,3 +67,31 @@ failures; no diagnostics reference the changed chat files.
 
 Library resolution and the application-native compile path are the next cycle.
 No success rate for the corrected chat is claimed before fresh model replays.
+
+## Cycle 2 candidate: native editor regression and library/compile path
+
+The frozen cycle-1 bundle was replayed in the actual local editor, with real
+OpenCode, Qwen and compiler: L1 took 12 MCP calls, six failed steps and 173.30 s.
+Five manifest edits incorrectly returned `edit_conflict`; one compile lacked
+`Servo.h`. Qwen then used software pulses instead of repairing the dependency.
+This is a failed dependency regression, not a successful servo validation.
+
+Root cause: native editor snapshots retain optional properties as `undefined`,
+whereas JSON omits those properties. The three-way merge mistook absence versus
+`undefined` for a user edit. The candidate normalizes all three snapshots to
+JSON before merging. It also preserves explicitly empty manifests and updates
+board metadata without recreating the MCU unless board identity/kind changes.
+
+Chat compile-only requests now use the application's real compiler and owner
+policy, like the toolbar, rather than the separate compact offline build lane.
+Imports select canonical installed library names and transitive dependencies.
+Exact pins are retained; core libraries are not invented as user packages.
+Missing unique registry identities use the existing managed Library API and its
+owner checks, then verify installed headers. Unknown/ambiguous imports are not
+guessed. Source text is never rewritten to bypass dependencies. Component
+references identify related libraries as candidates, not requirements.
+The external compact MCP and its offline AVR/ESP32 build paths are unchanged.
+Pending application builds are polled without restarting; late results after
+source/configuration changes or cancellation never overwrite current firmware.
+Fresh model replay results are pending; deterministic success is not a model
+quality result.
