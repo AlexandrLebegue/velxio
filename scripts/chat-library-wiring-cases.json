@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "purpose": "Chat regressions for the user's missing-servo-library report, multi-library builds and native wiring. Requirements only, no solution code or new product examples.",
+  "cases": {
+    "L1": {
+      "prompt": "Sur cette Arduino Uno, ajoute un servomoteur correctement alimenté et câblé, et positionne-le à 45 degrés. Compile le projet et indique le vrai résultat. Pas besoin de démarrer la simulation.",
+      "initial": {"board": "arduino-uno", "files": [{"name": "sketch.ino", "content": "void setup() {}\nvoid loop() {}\n"}]},
+      "expected": {"board": "arduino-uno", "component_counts": {"servo": 1}, "behavior": "servo signal on output-capable GPIO, correct power/ground, Servo include resolves, fixed 45 degrees"}
+    },
+    "L2": {
+      "prompt": "Crée un montage Arduino Nano avec un potentiomètre qui commande un servomoteur de 0 à 180 degrés sur toute sa course. Câble l'ensemble et compile le programme. Rapporte le vrai résultat de compilation sans démarrer la simulation.",
+      "expected": {"board": "arduino-nano", "component_counts": {"servo": 1, "potentiometer": 1}, "behavior": "analog input maps full range to servo 0..180; correct power and ground"}
+    },
+    "L3": {
+      "prompt": "Avec une Arduino Uno, un DHT22 et un écran OLED SSD1306 I2C, affiche la température et l'humidité une fois toutes les deux secondes. Prépare le montage complet et compile le projet. Dis ce qui a réellement réussi, sans lancer la simulation.",
+      "expected": {"board": "arduino-uno", "component_counts": {"dht22": 1}, "behavior": "DHT22 with supply/ground/data pull-up; OLED correct supply/ground/SDA/SCL; current temperature and humidity, 2000 ms refresh"}
+    },
+    "L4": {
+      "prompt": "Fais un télémètre avec une Arduino Uno, un HC-SR04, un écran LCD 16x2 I2C et un buzzer passif. Affiche la distance en centimètres et fais sonner le buzzer si un objet est à moins de 25 cm. Câble et compile le montage, puis donne le résultat réel. Ne démarre pas la simulation.",
+      "expected": {"board": "arduino-uno", "component_counts": {"hc-sr04": 1, "buzzer": 1}, "behavior": "trigger/echo distinct, LCD SDA/SCL correct, current distance in cm, tone below 25 cm"}
+    }
+  }
+}

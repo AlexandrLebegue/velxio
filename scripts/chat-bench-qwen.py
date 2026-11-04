@@ -201,7 +201,7 @@ async def main(args):
     revision = ab.command(['git', '-C', ROOT, 'rev-parse', 'HEAD']).stdout.strip()
     suite = json.loads(args.suite.read_text()) if args.suite else None
     ab.write_json(root/'protocol.json', {'revision':revision,'model':'qwen3.8-27b','mode':'real-chat-api/backend-editor-adapter',
-                 'single_prompt':True,'sequential':True,'timeout_seconds':720,'max_steps':40,'max_output_tokens':8192,
+                 'single_prompt':True,'sequential':True,'timeout_seconds':args.timeout_seconds,'max_steps':args.max_steps,'max_output_tokens':8192,
                  'suite_sha256':hashlib.sha256(args.suite.read_bytes()).hexdigest() if args.suite else None})
     os.environ.update(ab.toolchain_env(args.toolchain, args.arduino_cli))
     os.environ['MCP_COMPACT_INVENTORY'] = str(args.inventory.resolve())
@@ -267,7 +267,7 @@ async def main(args):
     # Some global providers use an environment credential reference.
     if isinstance(key, str) and key.startswith('{env:') and key.endswith('}'):
         key = os.environ[key[5:-1]]
-    settings = ConnectionSettings(base_url=options['baseURL'], api_key=key, model='qwen3.8-27b', max_steps=40, timeout_seconds=720)
+    settings = ConnectionSettings(base_url=options['baseURL'], api_key=key, model='qwen3.8-27b', max_steps=args.max_steps, timeout_seconds=args.timeout_seconds)
     rows = []
     try:
         async with httpx.AsyncClient(base_url=f'http://127.0.0.1:{port}', trust_env=False, timeout=30) as client:
@@ -288,7 +288,7 @@ async def main(args):
                     print('START', case, flush=True);started = time.monotonic()
                     response = await client.post(f'/api/agent/sessions/{sid}/messages', json={'message': prompt, 'request_id': 'single-prompt'});response.raise_for_status()
                     session = next(s for s in runtime.sessions.values() if s.id == sid)
-                    await asyncio.wait_for(asyncio.shield(session.task), 735)
+                    await asyncio.wait_for(asyncio.shield(session.task), args.timeout_seconds+15)
                     elapsed = round(time.monotonic()-started, 2)
                     # AgentPanel refreshes and applies the workspace on a
                     # terminal event, including direct native file edits.
@@ -392,6 +392,8 @@ if __name__ == '__main__':
     parser.add_argument('--arduino-cli', type=Path, required=True)
     parser.add_argument('--toolchain', type=Path, required=True)
     parser.add_argument('--inventory', type=Path, required=True)
+    parser.add_argument('--max-steps', type=int, default=20, help='Match chat settings; historical generous runs used 40')
+    parser.add_argument('--timeout-seconds', type=int, default=300, help='Match chat settings; historical runs used 720')
     args = parser.parse_args()
     allowed = set(json.loads(args.suite.read_text())['cases']) if args.suite else {'B1','B2','B3','B4','B5','V1','V2'}
     import re
