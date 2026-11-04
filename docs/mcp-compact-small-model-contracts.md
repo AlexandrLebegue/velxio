@@ -355,3 +355,66 @@ remain 8/7/8 calls. All compiler output remains an explicit controlled double.
 Validation for milestone 4g: `test_agent.py` — 31 tests OK;
 `test_mcp_compact*.py` — 165 tests OK. The deterministic report is regenerated
 from the script, including the three successful one-correction recovery probes.
+
+### Bounded catalog navigation (milestone 4h)
+
+Both catalog tools return at most **24 KiB of UTF-8 JSON**, measured before MCP
+transport framing. Search accepts `limit=1..50` (default 5); references accept
+`limit=1..50` (default 20). Both accept an integer `offset=0..1000000`. Oversized
+pages shrink to the largest prefix that fits the byte budget rather than
+failing the entire request. Units and ordering are deterministic for a given
+catalog revision; changing the requested limit does not change their identity.
+
+Every successful catalog response includes `offset`, `limit`, `total`,
+`has_more`, `truncated`, `next_offset`, `max_response_bytes`, `next_section`,
+`next_request` and `next_action`. `next_offset` is strictly increasing while
+`has_more=true`, and is `null` at the end. Follow the complete `next_request`
+object when more data is needed, retaining the same query or reference section.
+A matching search hit can be used immediately without reading further pages. `next_section` is an
+optional navigation hint after the current section finishes, not a requirement
+to read every section. Section hints terminate and cannot form a cycle.
+An empty page beyond the total never restarts the search or reference.
+
+For references, `total` and `offset` count section units: list entries, object
+fields, file chunks, or explicit nested fragments. `data_complete=true` means
+`data` is the complete section. Ordinary native board/component templates fit
+in one default page and retain their existing directly usable shape. A page
+with omitted preceding/following data has `truncated=true`; never save it as a
+complete project. A successful tool request is not evidence of completeness.
+
+Large `code` files are returned as plain `data.files[].content` chunks, with
+`content_offset`, `content_next_offset` and `content_total_bytes` measured in
+UTF-8 bytes. File identity and SHA-256 still refer to the complete file. Join
+chunks of the same file in byte-offset order; no newline, quote or Unicode
+repair is performed. Original non-UTF-8 source evidence remains lossless in
+`data.raw_inputs[].content_b64`, with corresponding byte-offset fields.
+Files small enough to fit one unit retain the original file object shape.
+
+For an unusually large nested non-code field, `data=null` and `fragments`
+contain explicit JSON-pointer paths, values and, for split strings,
+`text_offset`/`next_text_offset`/`text_total_bytes`. These fragments are not a
+native document. Concatenate strings at identical paths by byte offset and
+reassemble the section only when needed; prefer a reviewed `from_example`
+recipe for project creation. Oversized duplicate outer metadata is listed in
+`metadata_omitted`; the section data remains available through pagination
+(and example metadata through `overview`). Error paths are capped at 512
+characters with `path_truncated=true` when necessary, keeping errors bounded.
+
+| Scenario | Previous optimized calls | Current optimized calls | Manual native / named | Forced two-unit reference pages |
+| --- | ---: | ---: | ---: | ---: |
+| LED / Uno | 5 | 5 | 8 / 8 | 15 |
+| Servo / Nano | 5 | 5 | 7 / 7 | 12 |
+| E-paper / ESP32 | 5 | 5 | 8 / 8 | 13 |
+
+All paths finish with zero unexpected errors, repeated identical calls or build
+status polls. Forced paging adds 7/5/5 continuation calls, and produces the same
+valid project structures before the controlled build. Happy-path catalog
+responses peak at 2003/2712/3026 bytes respectively. The separate one-error
+recovery paths remain 6 calls, 1 expected error and 0 unexpected errors each.
+These are deterministic contract checks, not real-model success rates or real
+firmware execution measurements.
+
+Final validation for milestone 4h: `test_agent.py` — **31 tests OK**;
+`test_mcp_compact*.py` — **173 tests OK**, including eight pagination regressions.
+The scenario regression reproduces the checked-in JSON report exactly. Tests
+use temporary isolated stores and controlled compiler adapters only.

@@ -12,6 +12,7 @@ import subprocess
 
 from .contracts import MAX_RESPONSE_BYTES, MAX_SEARCH_OFFSET
 from .errors import failure, normalize_error
+from .pagination import search_page, reference_page
 
 
 class CatalogError(ValueError):
@@ -126,20 +127,26 @@ class Catalog:
                 matches = [entry for _, entry in sorted(scored, key=lambda item: (-item[0], not recipe_metadata(item[1]['id'])['supported'] if kind == 'example' else False, item[1]["id"]))]
                 used = [word for term, word in terms.items() if term in matched_terms]
             page = matches[offset:offset + limit]
-            return {"ok": True, "revision": self.revision, "items": [
+            result = {"ok": True, "revision": self.revision, "items": [
                 {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300],
                  **({'from_example': recipe_metadata(e['id'])} if e['kind'] == 'example' else {}),
                  **({"metadataId" if e["kind"] == "component" else "boardKind": e["key"]} if e["kind"] in ("component", "board") else {})} for e in page],
                 "query_original": query, "query_used": used,
                 "total": len(matches), "has_more": offset + len(page) < len(matches),
                 "next_offset": offset + len(page) if offset + len(page) < len(matches) else None}
+            return search_page(result, arguments)
         return self._guard(run, 'search_catalog', arguments)
 
     def get_reference(self, **arguments):
         def run():
             from .examples import recipe_metadata
-            if set(arguments) - {"id", "section"}:
+            if set(arguments) - {"id", "section", "offset", "limit"}:
                 raise CatalogError("invalid_argument", "Unknown reference argument")
+            offset, limit = arguments.get('offset', 0), arguments.get('limit', 20)
+            if type(offset) is not int or not 0 <= offset <= MAX_SEARCH_OFFSET:
+                raise CatalogError('invalid_argument', f'offset must be an integer in 0..{MAX_SEARCH_OFFSET}')
+            if type(limit) is not int or not 1 <= limit <= 50:
+                raise CatalogError('invalid_argument', 'limit must be an integer in 1..50')
             key, section = arguments.get("id"), arguments.get("section", "overview")
             if not isinstance(key, str) or not 1 <= len(key) <= 240:
                 raise CatalogError("invalid_argument", "id is required (max 240 characters)")
@@ -209,7 +216,7 @@ class Catalog:
             if e["kind"] == "board":
                 result["execution"] = {"supported": False, "state": "unsupported",
                     "message": "The six-tool MCP compiles projects; it does not run a simulator. Do not poll for simulation startup."}
-            return result
+            return reference_page(result, arguments, e['kind'])
         return self._guard(run, 'get_reference', arguments)
 
     @staticmethod

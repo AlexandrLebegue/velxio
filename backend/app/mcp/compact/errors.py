@@ -81,6 +81,11 @@ def normalize_error(result, tool=None, arguments=None):
     error.setdefault('received', preview(arguments))
     error.setdefault('expected', message or 'A valid request and available local prerequisites')
     error.setdefault('next_action', ACTIONS.get(code, 'Resolve the prerequisite described in expected before calling {tool} again. Do not repeat unchanged arguments.').format(tool=tool or 'the tool'))
+    path = str(error['path']).encode('utf-8', 'backslashreplace').decode('utf-8')
+    if len(path) > 512:
+        error['path_truncated'] = True
+    error['path'] = path[:512]
+    error['received'] = str(error['received'])[:200]
     error['expected'] = str(error['expected'])[:500]
     error['next_action'] = str(error['next_action'])[:500]
     return {**result, 'error': error}

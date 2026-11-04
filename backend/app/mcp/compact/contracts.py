@@ -122,7 +122,7 @@ _INPUTS = {
         "kind": {**enum("all", "component", "board", "example"), "default": "all"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}}),
-    "get_reference": obj({"id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview",
+    "get_reference": obj({"offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}, "id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview",
         "description": "project: boards return a directly saveable native document in data and an instance_template beside data. Components return data.instance_template (id, bare metadataId, x, y, properties), components[] and known pinNames or unknown. example_references links real examples; code retrieves source. Simulation is unsupported."}}, ["id"]),
     "save_project": save,
     "check_project": obj({"project_id": identifier, "version": version}, ["project_id", "version"]),
@@ -135,7 +135,8 @@ _INPUTS = {
 
 _ERROR = obj({"ok": {"const": False}, "error": obj({
     "code": string(80), "message": string(500),
-    "path": {"type": "string", "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
+    "path_truncated": {"type": "boolean"},
+    "path": {"type": "string", "maxLength": 512, "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
     "received": {"type": "string", "maxLength": 200, "description": "JSON value preview (truncated), or <missing>."},
     "expected": string(500),
     "file": string(240), "observed": string(240), "next_action": string(500),
@@ -201,6 +202,28 @@ _RESULTS = {
         "eof": {"type": "boolean"}, "truncated": {"type": "boolean"}, "encoding": enum("utf8", "base64")},
         ["data", "offset", "next_offset", "total_bytes", "sha256", "eof", "truncated", "encoding"]),
 }
+
+# Catalog navigation is machine-readable and byte bounded for both tools.
+for name in ('search_catalog', 'get_reference'):
+    _RESULTS[name]['properties'].update({
+        'offset': {'type': 'integer', 'minimum': 0},
+        'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
+        'total': {'type': 'integer', 'minimum': 0},
+        'has_more': {'type': 'boolean'},
+        'truncated': {'type': 'boolean'},
+        'next_offset': {'type': ['integer', 'null'], 'minimum': 0},
+        'max_response_bytes': {'const': MAX_RESPONSE_BYTES},
+        'next_section': {'type': ['string', 'null']},
+        'next_request': {'type': ['object', 'null']},
+        'next_action': string(500),
+    })
+    for field in ('offset', 'limit', 'total', 'has_more', 'truncated', 'next_offset', 'max_response_bytes', 'next_section', 'next_request', 'next_action'):
+        if field not in _RESULTS[name]['required']:
+            _RESULTS[name]['required'].append(field)
+_RESULTS['get_reference']['properties'].update({'data_complete': {'type': 'boolean'},
+    'metadata_omitted': {'type': 'array', 'items': {'type': 'string'}},
+    'fragments': {'type': 'array', 'maxItems': 50, 'items': {'type': 'object'}}})
+_RESULTS['get_reference']['required'].append('data_complete')
 
 # A transport-success response is not itself a build-success certificate.
 _RESULTS['build_project']['allOf'] = [

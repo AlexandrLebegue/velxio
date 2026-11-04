@@ -21,6 +21,12 @@ class DeterministicScenarioTests(unittest.IsolatedAsyncioTestCase):
         for case in result['named_wiring']:
             self.assertEqual(case['unexpected_errors'], 0)
             self.assertEqual(case['repeated_identical_calls'], 0)
+        self.assertEqual([case['tool_calls'] for case in result['paged_manual']], [15, 12, 13])
+        for case in result['paged_manual']:
+            self.assertGreater(case['reference_pages_followed'], 0)
+            self.assertLessEqual(case['max_catalog_response_bytes'], 24 * 1024)
+            self.assertEqual(case['unexpected_errors'], 0)
+            self.assertEqual(case['repeated_identical_calls'], 0)
         for case in result['error_recovery']:
             self.assertEqual(case['tool_calls'], 6)
             self.assertEqual(case['expected_errors'], 1)

@@ -47,6 +47,8 @@ class DeterministicClient:
         self.catalog, self.store, self.checker, self.builds = catalog, store, checker, builds
         self.calls, self.errors, self.signatures = [], 0, Counter()
         self.expected_errors = 0
+        self.max_catalog_bytes = 0
+        self.reference_pages_followed = 0
 
     async def call(self, name, *, expect_error=False, **arguments):
         validate(arguments, TOOL_SCHEMAS[name]['inputSchema'])
@@ -61,6 +63,9 @@ class DeterministicClient:
         else:
             result = getattr(self.store, name)(**arguments)
         validate(result, TOOL_SCHEMAS[name]['outputSchema'])
+        if name in ('search_catalog', 'get_reference'):
+            self.max_catalog_bytes = max(self.max_catalog_bytes, len(canonical(result)))
+            assert len(canonical(result)) <= 24 * 1024
         if expect_error:
             assert result['ok'] is False
             assert {'code', 'path', 'received', 'expected', 'next_action'} <= result['error'].keys()
@@ -72,7 +77,7 @@ class DeterministicClient:
         return result
 
 
-async def run_scenario(catalog, scenario, from_example=False, named_wiring=False, recover_once=False):
+async def run_scenario(catalog, scenario, from_example=False, named_wiring=False, recover_once=False, paged_references=False):
     name, board_kind, parts, dependencies, code = scenario
     with tempfile.TemporaryDirectory(prefix='compact-contract-') as temporary:
         root = Path(temporary)
@@ -104,6 +109,25 @@ async def run_scenario(catalog, scenario, from_example=False, named_wiring=False
         builds = BuildService(store, checker, adapter=OwnerQueueAdapter(lambda heavy: ControlledGate(), compile_double,
                               test_only=True, name='deterministic-scenarios-v1'), toolchains=toolchains)
         client = DeterministicClient(catalog, store, checker, builds)
+        async def request_reference(**arguments):
+            if paged_references:
+                arguments['limit'] = 2
+            result = await client.call('get_reference', **arguments)
+            merged = result['data']
+            while result['has_more']:
+                request = result['next_request']
+                assert request['tool'] == 'get_reference'
+                result = await client.call(request['tool'], **request['arguments'])
+                client.reference_pages_followed += 1
+                # These reviewed templates fit whole top-level field units;
+                # never save pointer fragments as if they were a native doc.
+                assert 'fragments' not in result
+                for key, value in result['data'].items():
+                    if key in merged and isinstance(merged[key], list):
+                        merged[key].extend(value)
+                    else:
+                        merged[key] = value
+            return {**result, 'data': merged}
         try:
             if from_example:
                 query = 'blink' if name == 'led-uno' else 'servo' if name == 'servo-nano' else 'epaper'
@@ -125,19 +149,19 @@ async def run_scenario(catalog, scenario, from_example=False, named_wiring=False
             else:
                 search = await client.call('search_catalog', query='e-ink epaper 1.54' if name == 'eink-esp32' else parts[0], kind='component')
                 assert 'component:' + parts[0] in [item['id'] for item in search['items']]
-                board_reference = await client.call('get_reference', id='board:' + board_kind, section='project')
+                board_reference = await request_reference(id='board:' + board_kind, section='project')
                 assert board_reference['execution']['state'] == 'unsupported'
                 document = board_reference['data']
                 board = document['boards'][0]
                 board['libraries'] = list(dependencies)
                 for part in parts:
-                    reference = await client.call('get_reference', id='component:' + part, section='project')
+                    reference = await request_reference(id='component:' + part, section='project')
                     template = reference['data']['instance_template']
                     assert template['metadataId'] == part
                     document['components'].append(template)
                     if name == 'eink-esp32':
                         example = reference['data']['example_references'][0]
-                        source = await client.call('get_reference', id=example, section='code')
+                        source = await request_reference(id=example, section='code')
                         assert 'GxEPD2' in source['data']['files'][0]['content']
                 group = board['activeFileGroupId']
                 document['fileGroups'][group] = [{'name': 'sketch.ino', 'content': code}]
@@ -174,6 +198,7 @@ async def run_scenario(catalog, scenario, from_example=False, named_wiring=False
             firmware = next(item for item in finished['artifacts'] if item['kind'] == 'firmware')
             await client.call('read_artifact', artifact_id=firmware['id'], length=4096, encoding='base64')
             return {'scenario': name, 'tool_calls': len(client.calls), 'calls_by_tool': dict(Counter(client.calls)),
+                    'reference_pages_followed': client.reference_pages_followed, 'max_catalog_response_bytes': client.max_catalog_bytes,
                     'unexpected_errors': client.errors, 'expected_errors': client.expected_errors, 'repeated_identical_calls': sum(count - 1 for count in client.signatures.values()),
                     'build_status_polls': polls, 'controlled_build_callbacks': len(callbacks),
                     'simulation': 'unsupported', 'test_only': True, 'real_compiler_executed': False}
@@ -186,6 +211,7 @@ async def evaluate():
     return {'method': 'deterministic scripted client; strict six-tool schemas; controlled owner adapter',
             'real_llm_used': False, 'real_compiler_used': False,
             'baseline': [await run_scenario(catalog, scenario) for scenario in SCENARIOS],
+            'paged_manual': [await run_scenario(catalog, scenario, named_wiring=True, paged_references=True) for scenario in SCENARIOS],
             'error_recovery': [await run_scenario(catalog, scenario, from_example=True, recover_once=True) for scenario in SCENARIOS],
             'named_wiring': [await run_scenario(catalog, scenario, named_wiring=True) for scenario in SCENARIOS],
             'previous_optimized_calls': {'led-uno': 5, 'servo-nano': 5, 'eink-esp32': 5},

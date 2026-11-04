@@ -14,6 +14,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 4200,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -34,6 +36,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 3846,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -54,6 +58,76 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2815,
+      "unexpected_errors": 0,
+      "expected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    }
+  ],
+  "paged_manual": [
+    {
+      "scenario": "led-uno",
+      "tool_calls": 15,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 10,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "reference_pages_followed": 7,
+      "max_catalog_response_bytes": 3489,
+      "unexpected_errors": 0,
+      "expected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "servo-nano",
+      "tool_calls": 12,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 7,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "reference_pages_followed": 5,
+      "max_catalog_response_bytes": 3343,
+      "unexpected_errors": 0,
+      "expected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "eink-esp32",
+      "tool_calls": 13,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 8,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "reference_pages_followed": 5,
+      "max_catalog_response_bytes": 2497,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -75,6 +149,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2003,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -94,6 +170,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2712,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -113,6 +191,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 3026,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -135,6 +215,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 4200,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -155,6 +237,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 3846,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -175,6 +259,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2815,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -201,6 +287,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2003,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -220,6 +308,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 2712,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -239,6 +329,8 @@
         "build_project": 1,
         "read_artifact": 1
       },
+      "reference_pages_followed": 0,
+      "max_catalog_response_bytes": 3026,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,

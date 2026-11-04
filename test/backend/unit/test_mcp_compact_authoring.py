@@ -46,7 +46,12 @@ class CompactAuthoringTests(unittest.TestCase):
         connections = [('GND', 'GND'), ('3V3', 'VCC'), ('18', 'SCK'), ('23', 'SDI'),
                        ('5', 'CS'), ('17', 'DC'), ('16', 'RST'), ('4', 'BUSY')]
         self.assertEqual({end for _, end in connections}, set(fragment['pinNames']))
-        board_pins = self.catalog.get_reference(id='board:esp32', section='pins')['data']
+        page = self.catalog.get_reference(id='board:esp32', section='pins')
+        board_pins = list(page['data'])
+        while page['has_more']:
+            page = self.catalog.get_reference(**page['next_request']['arguments'])
+            board_pins.extend(page['data'])
+        self.assertEqual(len(board_pins), page['total'])
         self.assertTrue({start for start, _ in connections} <= {p['name'] for p in board_pins})
         doc['wires'] = [{'id': 'w-' + end, 'start': {'componentId': doc['boards'][0]['id'], 'pinName': start},
                          'end': {'componentId': fragment['components'][0]['id'], 'pinName': end}}
