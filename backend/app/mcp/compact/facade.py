@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .catalog import Catalog, bounded
 from .contracts import TOOL_SCHEMAS
+from .errors import normalize_error
 from .projects import ProjectStore, MISSING, pointer, validate_save_arguments, validation_error
 from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
@@ -19,7 +20,7 @@ DESCRIPTIONS = {
     'save_project': 'Prefer from_example=<catalog example ID> with its advertised short parameters to create a native project without rewriting code or wiring. Only examples advertising from_example.supported=true are accepted. Otherwise save plain sketch text or a native document. connect accepts a batch of instance.pin -> instance.pin strings (board aliases the active board), resolving common aliases to native pins and rejecting structural conflicts. Updates require project_id and expected_version. Source text is never unescaped or silently repaired.',
     'check_project': 'Check an exact version, including unusable Arduino sketches. Errors are listed first with file, observed, expected and next_action. ok means the tool returned a report, not that the sketch is valid. No electrical or functional certification.',
     'build_project': 'Start an offline build, waiting up to wait_seconds (default 20, max 60) for its final result. Claim build success only for state=done AND success=true; ok only means the tool request succeeded. Otherwise follow next_action. Read first_error before separate capped warnings. No installation or simulation.',
-    'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices.',
+    'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices. All tool failures have error.code/path/received/expected/next_action; correct that value before retrying.',
 }
 _SCOPE = ContextVar('compact_http_scope', default=None)
 BASE = Path(__file__).parent
@@ -105,6 +106,10 @@ class CompactRuntime:
                 ToolchainInventory(doc['toolchain_root'], doc['toolchains'], complete=doc['complete']))
 
     async def call(self, name, arguments):
+        arguments = _normalize_arguments(arguments)
+        return normalize_error(await self._call(name, arguments), name, arguments)
+
+    async def _call(self, name, arguments):
         arguments = _normalize_arguments(arguments)
         if name == 'run_project':
             return {'ok': False, 'error': {'code': 'unsupported', 'message': 'Simulation is not supported by the six-tool MCP. Use build_project for compilation only; do not poll for startup.'}}
@@ -194,6 +199,7 @@ def create_facade(app, **runtime_options):
         except (OSError, ValueError, KeyError, TypeError) as exc:
             result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'preflight_unknown'),
                 'message': 'Local prerequisite unavailable or invalid; no installation attempted'}}
+        result = normalize_error(result, name, arguments)
         return [TextContent(type='text', text=json.dumps(result, ensure_ascii=False, separators=(',', ':')))]
 
     transport = RequestScope(mcp.streamable_http_app())

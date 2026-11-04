@@ -46,8 +46,9 @@ class DeterministicClient:
     def __init__(self, catalog, store, checker, builds):
         self.catalog, self.store, self.checker, self.builds = catalog, store, checker, builds
         self.calls, self.errors, self.signatures = [], 0, Counter()
+        self.expected_errors = 0
 
-    async def call(self, name, **arguments):
+    async def call(self, name, *, expect_error=False, **arguments):
         validate(arguments, TOOL_SCHEMAS[name]['inputSchema'])
         self.calls.append(name)
         self.signatures[canonical({'tool': name, 'arguments': arguments})] += 1
@@ -60,13 +61,18 @@ class DeterministicClient:
         else:
             result = getattr(self.store, name)(**arguments)
         validate(result, TOOL_SCHEMAS[name]['outputSchema'])
+        if expect_error:
+            assert result['ok'] is False
+            assert {'code', 'path', 'received', 'expected', 'next_action'} <= result['error'].keys()
+            self.expected_errors += 1
+            return result
         if not result['ok']:
             self.errors += 1
             raise AssertionError(result['error']['code'])
         return result
 
 
-async def run_scenario(catalog, scenario, from_example=False, named_wiring=False):
+async def run_scenario(catalog, scenario, from_example=False, named_wiring=False, recover_once=False):
     name, board_kind, parts, dependencies, code = scenario
     with tempfile.TemporaryDirectory(prefix='compact-contract-') as temporary:
         root = Path(temporary)
@@ -110,6 +116,10 @@ async def run_scenario(catalog, scenario, from_example=False, named_wiring=False
                     parameters.update(angle=45, delay_ms=1000)
                 else:
                     parameters.update(text='Hello Velxio', frame=True)
+                if recover_once:
+                    invalid_parameters = {**parameters, 'pins': {'LED' if name == 'led-uno' else 'PWM' if name == 'servo-nano' else 'CS': 999}}
+                    rejected = await client.call('save_project', expect_error=True, from_example=example['id'], parameters=invalid_parameters)
+                    assert rejected['error']['path'].startswith('/parameters/pins/')
                 saved = await client.call('save_project', from_example=example['id'], parameters=parameters)
                 board = {'id': saved['board_id']}
             else:
@@ -164,7 +174,7 @@ async def run_scenario(catalog, scenario, from_example=False, named_wiring=False
             firmware = next(item for item in finished['artifacts'] if item['kind'] == 'firmware')
             await client.call('read_artifact', artifact_id=firmware['id'], length=4096, encoding='base64')
             return {'scenario': name, 'tool_calls': len(client.calls), 'calls_by_tool': dict(Counter(client.calls)),
-                    'unexpected_errors': client.errors, 'repeated_identical_calls': sum(count - 1 for count in client.signatures.values()),
+                    'unexpected_errors': client.errors, 'expected_errors': client.expected_errors, 'repeated_identical_calls': sum(count - 1 for count in client.signatures.values()),
                     'build_status_polls': polls, 'controlled_build_callbacks': len(callbacks),
                     'simulation': 'unsupported', 'test_only': True, 'real_compiler_executed': False}
         finally:
@@ -176,6 +186,7 @@ async def evaluate():
     return {'method': 'deterministic scripted client; strict six-tool schemas; controlled owner adapter',
             'real_llm_used': False, 'real_compiler_used': False,
             'baseline': [await run_scenario(catalog, scenario) for scenario in SCENARIOS],
+            'error_recovery': [await run_scenario(catalog, scenario, from_example=True, recover_once=True) for scenario in SCENARIOS],
             'named_wiring': [await run_scenario(catalog, scenario, named_wiring=True) for scenario in SCENARIOS],
             'previous_optimized_calls': {'led-uno': 5, 'servo-nano': 5, 'eink-esp32': 5},
             'scenarios': [await run_scenario(catalog, scenario, from_example=True) for scenario in SCENARIOS]}

@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 
 from .contracts import MAX_RESPONSE_BYTES, MAX_SEARCH_OFFSET
+from .errors import failure, normalize_error
 
 
 class CatalogError(ValueError):
@@ -25,7 +26,7 @@ def encoded(value):
 
 def bounded(value):
     if len(encoded(value)) > MAX_RESPONSE_BYTES:
-        return {"ok": False, "error": {"code": "quota_exceeded", "message": "Reference exceeds 24 KiB; request a smaller section. No data was silently truncated."}}
+        return failure("quota_exceeded", "Reference exceeds 24 KiB; request a smaller section. No data was silently truncated.")
     return value
 
 
@@ -70,11 +71,12 @@ class Catalog:
             raise CatalogError("quota_exceeded", "Catalog snapshot exceeds 32 MiB")
         return cls(json.loads(result.stdout))
 
-    def _guard(self, operation):
+    def _guard(self, operation, tool, arguments):
         try:
-            return bounded(operation())
+            result = bounded(operation())
         except CatalogError as exc:
-            return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500]}}
+            result = {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
+        return normalize_error(result, tool, arguments)
 
     def search_catalog(self, **arguments):
         # Legacy model-generated cursors are ignored, never decoded or reused.
@@ -131,7 +133,7 @@ class Catalog:
                 "query_original": query, "query_used": used,
                 "total": len(matches), "has_more": offset + len(page) < len(matches),
                 "next_offset": offset + len(page) if offset + len(page) < len(matches) else None}
-        return self._guard(run)
+        return self._guard(run, 'search_catalog', arguments)
 
     def get_reference(self, **arguments):
         def run():
@@ -208,7 +210,7 @@ class Catalog:
                 result["execution"] = {"supported": False, "state": "unsupported",
                     "message": "The six-tool MCP compiles projects; it does not run a simulator. Do not poll for simulation startup."}
             return result
-        return self._guard(run)
+        return self._guard(run, 'get_reference', arguments)
 
     @staticmethod
     def _native_fragment(entry):

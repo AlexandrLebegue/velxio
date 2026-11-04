@@ -21,6 +21,11 @@ class DeterministicScenarioTests(unittest.IsolatedAsyncioTestCase):
         for case in result['named_wiring']:
             self.assertEqual(case['unexpected_errors'], 0)
             self.assertEqual(case['repeated_identical_calls'], 0)
+        for case in result['error_recovery']:
+            self.assertEqual(case['tool_calls'], 6)
+            self.assertEqual(case['expected_errors'], 1)
+            self.assertEqual(case['unexpected_errors'], 0)
+            self.assertEqual(case['repeated_identical_calls'], 0)
         for case in result['scenarios']:
             self.assertEqual(case['tool_calls'], 5)
             self.assertEqual(case['calls_by_tool'].get('get_reference', 0), 0)

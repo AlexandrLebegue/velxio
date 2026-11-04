@@ -325,3 +325,33 @@ No real model, compiler or simulator is executed.
 
 Validation for milestone 4e: `test_agent.py` — 31 tests OK;
 `test_mcp_compact*.py` — 161 tests OK, including five named-wiring tests.
+
+### Uniform errors (milestone 4g)
+
+Every failed tool request (`ok=false`) now requires one error envelope with
+`code`, `path`, `received`, `expected` and `next_action`; the compatible `message`
+field remains. `path` is an RFC 6901 pointer (empty means the root); native
+snapshot errors retain document-relative pointers. `received` is a JSON preview
+of at most 200 characters, or `<missing>`. Expected values and next actions are
+capped at 500 characters. Parameter failures inside reviewed recipes identify
+the exact nested parameter and its advertised constraints.
+
+The same formatter covers catalog/store/check/build services, SDK input-schema
+rejections, owner/prerequisite failures and transport response-size refusals.
+Retry guidance distinguishes malformed values from missing IDs, unsupported
+operations, stale versions, wiring conflicts and unavailable prerequisites.
+A parameterized regression checks all six services and all six SDK callbacks.
+Successful check/build reports still carry their existing diagnostic formats:
+`ok=true` is not proof of a valid circuit or successful compilation.
+
+Deterministic happy-path calls remain 5 → 5 for each of LED/Uno, servo/Nano and
+e-paper/ESP32, with zero errors or repeated calls. A separate recovery probe
+uses one out-of-range pin, verifies the uniform error and exact parameter path,
+then corrects it once: 6 calls, 1 expected error, 0 unexpected errors and 0
+repeated calls per scenario. This measures the scripted recovery contract,
+not the reasoning behavior of a real model. Native and named manual authoring
+remain 8/7/8 calls. All compiler output remains an explicit controlled double.
+
+Validation for milestone 4g: `test_agent.py` — 31 tests OK;
+`test_mcp_compact*.py` — 165 tests OK. The deterministic report is regenerated
+from the script, including the three successful one-correction recovery probes.

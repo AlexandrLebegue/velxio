@@ -139,7 +139,7 @@ _ERROR = obj({"ok": {"const": False}, "error": obj({
     "received": {"type": "string", "maxLength": 200, "description": "JSON value preview (truncated), or <missing>."},
     "expected": string(500),
     "file": string(240), "observed": string(240), "next_action": string(500),
-}, ["code", "message"])}, ["ok", "error"])
+}, ["code", "message", "path", "received", "expected", "next_action"])}, ["ok", "error"])
 artifact = obj({"id": identifier, "kind": string(80), "size_bytes": {"type": "integer", "minimum": 0}, "sha256": version}, ["id", "kind", "size_bytes", "sha256"])
 readable_error = obj({"file": {"type": ["string", "null"], "maxLength": 240},
                       "line": {"type": ["integer", "null"], "minimum": 0},

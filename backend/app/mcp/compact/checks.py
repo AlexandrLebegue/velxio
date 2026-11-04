@@ -220,7 +220,7 @@ class ProjectChecker:
                 issues.pop()
                 result["issues_truncated"] = True
             return result
-        return self.store._response(run)
+        return self.store._response(run, tool='check_project', arguments=arguments)
 
     def _check(self, doc, pid, version):
         issues = []

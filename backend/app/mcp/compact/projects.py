@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .catalog import CatalogError, bounded
 from .contracts import MAX_PROJECT_BYTES, MAX_RESPONSE_BYTES
+from .errors import normalize_error
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 ID = re.compile(r"^[pab]_[0-9a-f]{32}$")
@@ -535,18 +536,20 @@ class ProjectStore:
         if not isinstance(value, str) or not ID.fullmatch(value) or not value.startswith(prefix + "_"):
             fail("invalid_argument", "Invalid opaque ID")
 
-    def _response(self, operation):
+    def _response(self, operation, *, tool=None, arguments=None):
         try:
-            return bounded(operation())
+            result = bounded(operation())
         except CatalogError as exc:
-            return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
+            result = {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
         except FileNotFoundError:
-            return {"ok": False, "error": {"code": "not_found", "message": "Project or artifact not found"}}
+            result = {"ok": False, "error": {"code": "not_found", "message": "Project or artifact not found"}}
         except OSError as exc:
             code = "quota_exceeded" if exc.errno in (errno.ENOSPC, errno.EDQUOT) else "unsafe_path" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "storage_error"
-            return {"ok": False, "error": {"code": code, "message": "Storage operation failed; existing files retained. Publication may have completed if the failure occurred after rename."}}
+            result = {"ok": False, "error": {"code": code, "message": "Storage operation failed; existing files retained. Publication may have completed if the failure occurred after rename."}}
         except (ValueError, KeyError, TypeError, RecursionError):
-            return {"ok": False, "error": {"code": "invalid_argument", "message": "Invalid document or stored metadata"}}
+            result = {"ok": False, "error": {"code": "invalid_argument", "message": "Invalid document or stored metadata"}}
+
+        return normalize_error(result, tool, arguments)
 
     def save_project(self, **arguments):
         def run():
@@ -644,7 +647,7 @@ class ProjectStore:
                         if provenance:
                             result['example_provenance'] = provenance
                         return result
-        return self._response(run)
+        return self._response(run, tool='save_project', arguments=arguments)
 
     def read_artifact(self, **arguments):
         def run():
@@ -706,7 +709,7 @@ class ProjectStore:
                         end -= 1
                     result.update(data=raw[offset:end].decode("utf-8"), next_offset=end, eof=False, truncated=True)
                 return result
-        return self._response(run)
+        return self._response(run, tool='read_artifact', arguments=arguments)
 
     def _build_blob(self, root, build, job, kind, raw):
         if kind not in ("firmware", "build_log") or not isinstance(raw, bytes):

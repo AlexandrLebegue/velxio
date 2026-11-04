@@ -38,20 +38,23 @@ def uses_component(reference_id, component):
     return component in ({BLINK: ('led', 'resistor'), SERVO: ('servo',), EPAPER: ('epaper-1in54-bw',)}.get(reference_id, ()))
 
 
-def _checked(parameters, fields):
-    if not isinstance(parameters, dict) or parameters.keys() - fields.keys():
-        raise CatalogError('invalid_argument', 'Unknown example parameter; use the advertised parameter schema')
+def _checked(parameters, fields, path='/parameters'):
+    from .projects import invalid, pointer
+    if not isinstance(parameters, dict):
+        invalid(path, parameters, 'short parameter object')
+    for key in parameters.keys() - fields.keys():
+        invalid(pointer(path, key), parameters[key], 'known parameters: ' + ', '.join(fields))
     for key, value in parameters.items():
         spec = fields[key]
         kind = spec['type']
         if kind == 'object':
-            _checked(value, spec['properties'])
+            _checked(value, spec['properties'], pointer(path, key))
         elif (kind == 'integer' and (type(value) is not int or not spec['minimum'] <= value <= spec['maximum'])
               or kind == 'boolean' and type(value) is not bool
               or kind == 'string' and (not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value)
                   or 'enum' in spec and value not in spec['enum']
                   or not spec.get('minLength', 1) <= len(value) <= spec.get('maxLength', 200))):
-            raise CatalogError('invalid_argument', 'Invalid example parameter: ' + key)
+            invalid(pointer(path, key), value, json.dumps(spec, ensure_ascii=True))
 
 
 def _replace(source, old, new, count=1):

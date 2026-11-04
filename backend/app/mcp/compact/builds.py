@@ -10,6 +10,7 @@ import re
 import uuid
 
 from .checks import LibraryInventory
+from .errors import failure
 from .projects import DIR_FLAGS, MAX_PROJECT_BYTES, ProjectStore, canonical, fail, filename
 from .contracts import MAX_RESPONSE_BYTES
 from .catalog import CatalogError
@@ -262,7 +263,7 @@ class BuildService:
         wait_seconds = arguments.pop('wait_seconds', 20)
         if (type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60
                 or has_wait and arguments.get('action') != 'start'):
-            return {'ok': False, 'error': {'code': 'invalid_argument', 'message': 'wait_seconds must be a finite number from 0 to 60, for start only'}}
+            return failure('invalid_argument', 'wait_seconds must be a finite number from 0 to 60, for start only', tool='build_project', arguments={**arguments, 'wait_seconds': wait_seconds}, path='/wait_seconds', received=repr(wait_seconds)[:200], expected='finite number 0..60 on action=start only')
         deadline = asyncio.get_running_loop().time() + wait_seconds
         def operation():
             action = arguments.get("action")
@@ -313,7 +314,7 @@ class BuildService:
             task = asyncio.create_task(self._run(build_id, request, adapter=self.adapter))
             self.tasks[build_id] = task
             return self._status(job)
-        result = self.store._response(operation)
+        result = self.store._response(operation, tool='build_project', arguments=arguments)
         if result.get('ok') and arguments.get('action') == 'start':
             task = self.tasks.get(result['build_id'])
             if task is not None and not task.done() and wait_seconds:
@@ -324,7 +325,7 @@ class BuildService:
             def refreshed():
                 with self.store._locked(False) as root:
                     return self._status(self._job(root, build_id))
-            result = self.store._response(refreshed)
+            result = self.store._response(refreshed, tool='build_project', arguments=arguments)
         return result
 
     def _event(self, build_id, *, running=False, log=None):
