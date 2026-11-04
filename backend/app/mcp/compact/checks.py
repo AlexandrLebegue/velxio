@@ -279,7 +279,7 @@ class ProjectChecker:
                 for li, name in enumerate(libraries):
                     lp = path + f"/libraries/{li}"
                     emit("dependency_declared", lp, "info", name)
-                    if name not in known_libraries:
+                    if name not in known_libraries and (inventory is None or name not in inventory["entries"]):
                         emit("dependency_name_unknown", lp, "unknown", "Library name has no declaration evidence in this catalog; not a claim that it is absent")
                         unavailable.add("dependency_catalog_coverage")
                     if inventory is None or (name not in inventory["entries"] and not inventory["complete"]):

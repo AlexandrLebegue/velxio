@@ -110,7 +110,7 @@ def serve(args):
     app = FastAPI(lifespan=lifespan)
     transport, mcp_lifespan, runtime = create_facade(
         app, root=args.evidence / 'unused-store', source_root=args.worktree,
-        inventory_file=args.evidence / 'absent-inventory.json')
+        inventory_file=getattr(args, 'inventory', None) or args.evidence / 'absent-inventory.json')
     app.state.compact_runtime = runtime
 
     @app.get('/bench/health')
@@ -126,7 +126,7 @@ def serve(args):
     @app.post('/bench/reset')
     async def reset(body: dict):
         label = body['run']
-        if not re.fullmatch(r'S[123]-[AB]-[12]', label):
+        if not re.fullmatch(r'(?:S[123]-[AB]-[12]|P[0-9]+-B[1-6]|V[12])', label):
             raise ValueError('Invalid run label')
         await runtime.close()
         runtime.services.clear()
@@ -524,6 +524,7 @@ def main():
     server = commands.add_parser('serve')
     server.add_argument('--worktree', type=Path, required=True)
     server.add_argument('--evidence', type=Path, required=True)
+    server.add_argument('--inventory', type=Path)
     server.add_argument('--port', type=int, required=True)
     inspect = commands.add_parser('audit')
     inspect.add_argument('--run-dir', type=Path, required=True)

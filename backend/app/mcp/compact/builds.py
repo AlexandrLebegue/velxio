@@ -69,7 +69,7 @@ class ToolchainInventory(LibraryInventory):
                     fail("preflight_unknown", "Toolchain member hash/size differs")
             toolchains[name] = {"version": doc["version"], "manifest_sha256": entry["sha256"], "members": members,
                                 "test_only": doc.get("test_only") is True, "inventory_root": self.root}
-            for field in ('idf_root', 'arduino_root', 'managed_components'):
+            for field in ('idf_root', 'arduino_root', 'managed_components', 'avr'):
                 if field in doc:
                     toolchains[name][field] = copy.deepcopy(doc[field])
             if 'arduino_core' in doc:

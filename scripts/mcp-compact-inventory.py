@@ -71,6 +71,49 @@ def collect(output, idf, arduino, libraries, managed=(), board='esp32:esp32:esp3
     return result
 
 
+def collect_avr(output, cli, cache):
+    """Pin installed AVR tools and actual library trees; never install or fetch."""
+    from app.mcp.compact.avr import digest_file
+    cli, cache, output = Path(cli).resolve(strict=True), Path(cache).resolve(strict=True), Path(output).absolute()
+    cores = sorted((cache / 'data/packages/arduino/hardware/avr').iterdir())
+    core = cores[-1].resolve(strict=True)
+    platform, boards = core / 'platform.txt', core / 'boards.txt'
+    if 'recipe.hooks.' in platform.read_text():
+        raise ValueError('Build hooks are not supported by this installed AVR lane')
+    entries, libraries = {}, {}
+    candidates = [*(cache / 'user/libraries').glob('*/library.properties'), *core.glob('libraries/*/library.properties')]
+    for path in candidates:
+        path = path.resolve(strict=True)
+        props = dict(line.split('=', 1) for line in path.read_text().splitlines() if '=' in line and not line.startswith('#'))
+        name = props.get('name', '').strip()
+        if not name or not props.get('version'):
+            raise ValueError('Library requires a real name/version manifest')
+        dependencies = [re.sub(r'\s*\(.*?\)', '', dep).strip() for dep in props.get('depends', '').split(',') if dep.strip()]
+        libraries[name] = {'source_root': str(path.parent), 'tree_sha256': digest(tree_manifest(path.parent)), 'dependencies': dependencies}
+        entries[name] = {'path': str(path).lstrip('/'), 'sha256': digest_file(path), **libraries[name]}
+    members = [{'path': str(p).lstrip('/'), 'sha256': digest_file(p)} for p in (platform, boards, core / 'cores/arduino/Arduino.h')]
+    avr = {'cli': str(cli), 'cli_sha256': digest_file(cli), 'core_root': str(core), 'core_tree_sha256': digest(tree_manifest(core)),
+           'data_root': str(cache / 'data'), 'platform': str(platform), 'platform_sha256': digest_file(platform),
+           'boards': str(boards), 'boards_sha256': digest_file(boards), 'libraries': libraries}
+    output.mkdir(parents=True, exist_ok=True)
+    tools = {}
+    for target in ('uno', 'nano', 'mega', 'leonardo'):
+        fqbn = 'arduino:avr:' + target + (':cpu=atmega328' if target == 'nano' else ':cpu=atmega2560' if target == 'mega' else '')
+        key = fqbn + '|arduino'
+        doc = {'kind': 'toolchain', 'name': key, 'version': core.name, 'test_only': False, 'members': members, 'avr': avr,
+               'arduino_core': {'id': 'arduino:avr', 'version': core.name,
+                   'platform_path': str(platform).lstrip('/'), 'platform_sha256': digest_file(platform),
+                   'boards_path': str(boards).lstrip('/'), 'boards_sha256': digest_file(boards)}}
+        raw = json.dumps(doc, sort_keys=True, separators=(',', ':')).encode()
+        path = output / ('avr-' + target + '.json')
+        path.write_bytes(raw)
+        tools[key] = {'path': str(path).lstrip('/'), 'sha256': hashlib.sha256(raw).hexdigest()}
+    result = {'schema_version': 1, 'complete': True, 'library_root': '/', 'toolchain_root': '/', 'libraries': entries, 'toolchains': tools,
+              'scope': 'installed AVR compiler and library trees; trusted local recipes; no OS network isolation claimed'}
+    (output / 'inventory.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
 def startup(output):
     """Pin the real ESP32 service's selected local inputs before ASGI starts.
 
@@ -119,6 +162,8 @@ def pair(value):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--avr-cli')
+    parser.add_argument('--avr-cache')
     parser.add_argument('--startup', action='store_true', help='Discover verified local inputs from the real ESP32 service; no compile/install')
     parser.add_argument('--idf')
     parser.add_argument('--arduino')
@@ -127,7 +172,12 @@ if __name__ == '__main__':
     parser.add_argument('--executable', type=pair, action='append')
     parser.add_argument('--board', default='esp32:esp32:esp32')
     args = parser.parse_args()
-    if args.startup:
+    if args.avr_cli:
+        if not args.avr_cache:
+            parser.error('--avr-cli requires --avr-cache')
+        doc = collect_avr(args.output, args.avr_cli, args.avr_cache)
+        print(json.dumps({'inventory': 'verified-avr', 'libraries': sorted(doc['libraries'])}))
+    elif args.startup:
         if args.idf or args.arduino or args.library or args.executable or args.managed or args.board != 'esp32:esp32:esp32':
             parser.error('--startup uses only the real service selection; explicit overrides are not accepted')
         doc = startup(args.output)

@@ -107,7 +107,10 @@ class RestCompileOwner:
                 progress_callback=log, spiffs_files=payload.get("spiffs_files"), pure_idf=payload.get("language") == "espidf", cpu_nice=nice, **common)
         else:
             if not self.test_only:
-                fail('unsupported', 'Offline production scope is ESP32 with approved template only')
+                if scope[0] is None or set(scope[0]) != set(payload.get('libraries', [])):
+                    fail('offline_scope_changed', 'AVR requires the exact declared and admitted library scope')
+                from .avr import compile_avr
+                return await compile_avr(payload, log)
             if payload.get("language") != "arduino":
                 fail("unsupported", "Only installed Arduino cores support this offline branch")
             result = await self.arduino.compile_offline(payload["files"], payload["board_fqbn"], **common)
@@ -150,14 +153,14 @@ class BoundOfflineAdapter:
             self.owner._owned_loop()
         except (ValueError, RuntimeError):
             return False
-        return self.owner.active and not self.owner.closing and (self.owner.test_only or not self.owner.production_blockers)
+        return self.owner.active and not self.owner.closing and (self.owner.test_only or not self.owner.production_blockers or os.environ.get('MCP_COMPACT_AVR_ENABLED') == '1')
 
     async def compile(self, payload, running, log):
         owner = self.owner
         owner._owned_loop()
         if not owner.active or self.request.app is not owner.app:
             fail("owner_conflict", "REST owner is no longer active")
-        if not self.ready:
+        if not self.ready or (payload['board_fqbn'].startswith('esp32:') and not owner.test_only and owner.production_blockers):
             fail(*self.blocker)
 
         async def admitted():
