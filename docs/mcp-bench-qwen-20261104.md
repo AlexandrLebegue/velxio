@@ -1,5 +1,6 @@
 # Real Qwen MCP cycles — 2026-11-04
 
+Verdict: the required two consecutive qualifying passes were achieved.
 Local workbench only; no SSH, production access, deployment or push. OpenCode 1.19.3 uses the existing hyperqwen/qwen3.8-27b provider.
 Fresh directory/session, identical neutral AGENTS.md, one complete natural user prompt, no coaching; sequential runs, 720-second timeout.
 Each pass pins a Git worktree and uses the actual six-tool HTTP facade and genuine REST owner. The opt-in AVR lane executes the installed compiler, not a fixture.
@@ -25,6 +26,8 @@ Errors count failed MCP replies by code; checker informational findings are sepa
 | P3-B3 | 10 | 0 | [] | 62703 | 75.43 | Y/Y/Y/Y/Y | True | Y/Y/Y |
 | P3-B4 | 6 | 0 | [] | 48885 | 47.24 | Y/Y/Y/Y/Y | True | Y/Y/Y |
 | P3-B5 | 7 | not_found:1 | [] | 47310 | 50.25 | Y/Y/Y/Y/Y | True | Y/Y/Y |
+| V1 | 21 | not_found:1 | [8] | 157133 | 106.15 | Y/Y/Y/Y/Y | True | Y/Y/Y |
+| V2 | 9 | not_found:1 | [] | 49866 | 80.57 | Y/Y/Y/Y/Y | True | Y/Y/Y |
 
 ## Pass scores and exact failure families
 p1: 1/5 strict; errors [4, 7, 6, 6, 11]; complete=True; qualifying=False; revision `825f95e9550f`.
@@ -35,6 +38,8 @@ p2: 5/5 strict; errors [0, 1, 0, 0, 0]; complete=True; qualifying=True; revision
 - `not_found`: `{"arguments":{"id":"component:push-button","section":"project"},"tool":"get_reference"}`
 p3: 5/5 strict; errors [0, 0, 0, 0, 1]; complete=True; qualifying=True; revision `a8a6fc842be1`.
 - `not_found`: `{"arguments":{"id":"p_737f3f4ce4f449bb962da0fb5e52d23c","section":"project"},"tool":"get_reference"}`
+- V2 `not_found`: `{"arguments":{"id":"p_3042666d3e8f40409cbd2edfb7f65c95","section":"project"},"tool":"get_reference"}`
+- V1 `not_found`: `{"arguments":{"id":"component:led-green"},"tool":"get_reference"}`
 
 ## Changes and evidence
 - `1e36e2d1`: removed named wiring, retaining native start/end wires, e-paper pins and all ESP32 paths. 31 agent + 168 compact tests passed.
@@ -45,9 +50,15 @@ p3: 5/5 strict; errors [0, 0, 0, 0, 1]; complete=True; qualifying=True; revision
 - Cycle 2: scalar LED resistance/color, portable analog servo control, debounced button modes and composable sensor readouts/alarms; values and modes remain explicit parameters, with no benchmark prompt matching. E-paper gains optional metric-based centering without changing its default pins.
 - Candidate verification: six real AVR REST-owner builds passed across alternate sensor/display/alarm and board combinations; 31 agent + 177 compact MCP tests passed, including ESP32. These controls are not counted as Qwen benchmark successes.
 - Measured cycle 2 (`a8a6fc84`): 5/5 strict successes; MCP calls [13,14,8,7,13] versus [25,25,38,44,32], errors [0,1,0,0,0] versus [4,7,6,6,11]. All five read their final successful real owner build and independently recompile. One not_found ID guess remains; B2 repeats one search seven times and B5 five times. First qualifying pass; no further MCP change before confirmation.
-- Confirmation pass 3, unchanged MCP revision `a8a6fc84`: 5/5 strict successes; calls [12,10,10,6,7], errors [0,0,0,0,1], no identical-call loops. All five checked, read their final successful real owner build and independently recompiled; final immutable documents match the reviewed pass-2 versions. Two consecutive qualifying passes achieved. The remaining error is an a saved project ID passed to catalog-only get_reference, not a failed project build.
-- Database-export verification: 15/15 runs confirm exactly one complete user prompt and the required provider/model; no extra model request is made by this check.
-- False-success review: 1/15 assessed conclusions contradicted by independent project evidence; unassessed=0.
+- Confirmation pass 3, unchanged MCP revision `a8a6fc84`: 5/5 strict successes; calls [12,10,10,6,7], errors [0,0,0,0,1], no identical-call loops. All five checked, read their final successful real owner build and independently recompiled; final immutable documents match the reviewed pass-2 versions. Two consecutive qualifying passes achieved. The remaining error is a saved project ID passed to catalog-only get_reference, not a failed project build.
+- Across five cases, total calls/errors/time changed from 164/34/2748.56 s in pass 1 to 55/1/435.60 s in pass 2 and 45/1/324.89 s in pass 3. Baseline time includes three timeouts; these are observed totals, not isolated feature effects.
+- The single baseline false completion is B1: its compile claim was true, but its claimed finished circuit used nonexistent LED cathode K. It disclosed pin uncertainty. No contradictory completion was found in either qualifying pass.
+- Remaining priorities (not implemented after qualification): catalog ID errors should point to a concrete existing ID or saved artifact; make empty-query listing and pagination harder to confuse with filtered search; broaden independently audited recipe combinations. Exact repeated search in pass 2: search_catalog(kind="example", limit=10, offset=0), with query omitted.
+- Reserved validations after qualification, unchanged MCP: V1 Nano/green LED/330 ohms/2 Hz = 21 calls, 1 not_found, one search repeated 8 times; V2 Uno/sliding potentiometer/servo = 9 calls, 1 not_found, no loops. Both strict successes, checked and final build read, independently recompiled; no MCP changes followed their outcomes.
+- B6 is not executed: local IDF is absent. The bench separately checks constructor control pins, explicit SPI pins, native wires and extra display literals. A deterministic source probe exposes retained catalog demo labels ePaper/OK! alongside centered Hello World; remote exact-text review must catch this, rather than treating compilation or centering syntax as display validation. Default ESP32 recipes and compilation paths were not changed after the qualifying passes.
+- Final regression checks: test_agent.py — Ran 31 tests, OK; test_mcp_compact*.py — Ran 180 tests, OK (including session integrity and ESP32 source/wire audit). All four bench servers stopped and their temporary worktrees were removed. No MCP source changed after the two qualifying passes or from validation outcomes.
+- Database-export verification: 17/17 runs confirm exactly one complete user prompt and the required provider/model; no extra model request is made by this check.
+- False-success review: 1/17 assessed conclusions contradicted by independent project evidence; unassessed=0.
 
 HTTP trace: the malformed value is already present in the Qwen API response; OpenCode tool input and MCP incoming HTTP are identical.
 Exact observed upstream value: `{"changes":"[{\"op\": \"set\", \"path\": \"/"}`. The internal distinction between model generation and the Qwen server parser is not observable here.
@@ -55,7 +66,8 @@ Exact observed upstream value: `{"changes":"[{\"op\": \"set\", \"path\": \"/"}`.
 ## Verdict, remaining work and limits
 Stop requires two consecutive complete qualifying passes, each with all five strict successes and at most three MCP errors per run. No unmeasured success is claimed.
 Only source-bound reviews count; valid JSON strings and numeric strings may be normalized, but incomplete arguments must not be guessed or silently repaired.
-Two reserved validation prompts V1/V2 are separate from tuning; their results will be reported only when run. Small sample, one model/harness, order and cache effects remain limitations.
+Reserved validation prompts V1/V2: 2/2 strict; 0 not run. They are separate from tuning; no MCP changes are made from their outcomes.
+Small sample, one model/harness, order and cache effects remain limitations.
 The improvement bundle is measured together, without per-feature ablation: individual contributions and causal shares are not established. Prompt coverage cannot prove general reliability.
 B6-READY: `python scripts/mcp-bench-qwen.py pass --pass-number 6 --evidence <private-output> --cases B6 --mcp-url <explicit-URL>`; intended for the remote owner on its IDF host. No ESP32 run is performed here.
 B6 checks exact quoted Hello World, centering logic and native CS5/DC17/RST16/BUSY4/SCK18/SDI23/3V3/GND; independent IDF recompilation remains required on that host. It is excluded from the five-case score.

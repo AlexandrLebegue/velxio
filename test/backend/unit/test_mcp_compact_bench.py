@@ -14,6 +14,31 @@ spec.loader.exec_module(bench)
 
 
 class BenchIntegrityTests(unittest.TestCase):
+    def test_esp32_audit_catches_source_pin_mismatch_without_an_idf_claim(self):
+        from app.mcp.compact import Catalog, ProjectStore
+        root = Path(__file__).resolve().parents[3]
+        catalog = Catalog.from_snapshot(root / 'backend/app/mcp/compact/catalog.snapshot.json')
+        with tempfile.TemporaryDirectory() as temporary:
+            store = ProjectStore(temporary, catalog=catalog)
+            saved = store.save_project(from_example='example:epaper-1in54-uno-hello',
+                                       parameters={'board': 'esp32', 'text': 'Hello World', 'align': 'center'})
+            self.assertTrue(saved['ok'], saved)
+            doc = json.loads(store.read_artifact(artifact_id=saved['project_artifact_id'], length=12288)['data'])
+            board = doc['boards'][0]
+            source = doc['fileGroups'][board['activeFileGroupId']][0]['content']
+            facts = bench.epaper_source_facts(doc, source)
+            self.assertTrue(facts['source_wire_candidate'], facts)
+            self.assertTrue(facts['manual_review_required'])
+            self.assertNotIn('compile_ok', facts)
+            changed = source.replace('/*CS=*/5', '/*CS=*/6')
+            self.assertNotEqual(source, changed)
+            self.assertFalse(bench.epaper_source_facts(doc, changed)['source_wire_candidate'])
+            changed = source.replace('void setup() {', 'void setup() {\nSPI.begin(19, -1, 23, 5);')
+            self.assertFalse(bench.epaper_source_facts(doc, changed)['source_wire_candidate'])
+            # The catalog demo also prints labels: the remote audit must expose
+            # them rather than certifying an exact-text screen from compilation.
+            self.assertEqual(facts['additional_display_literals'], ['ePaper', 'OK!'])
+
     def test_remote_audit_selects_declared_project_and_latest_version(self):
         first, probe = 'p_' + 'a' * 32, 'p_' + 'b' * 32
         calls = [{'name': 'save_project', 'output': {'ok': True, 'project_id': project, 'version': version}}

@@ -151,6 +151,26 @@ def final_saved(calls, events):
     return next((s for s in reversed(saves) if s['project_id']==declared),saves[-1])
 
 
+def epaper_source_facts(doc, source):
+    """Conservative source/wire cross-check; manual review and IDF still required."""
+    clean=re.sub(r'/\*[\s\S]*?\*/|//[^\n]*','',source)
+    native=ab.circuit_facts(doc,'S3',clean)
+    _,resolve=ab.resolve_constants(clean)
+    controls=native['epaper_control_pins']
+    controls_match=[5,17,16,4] in controls
+    spi_calls=re.findall(r'\bSPI\s*\.\s*begin\s*\(([^)]*)\)',clean)
+    spi=[[resolve(v) for v in call.split(',')] for call in spi_calls if call.strip()]
+    # Omitted/default SPI initialization is left to manual source review.
+    spi_match=all(len(values)>=3 and values[0]==18 and values[2]==23 for values in spi) if spi else None
+    printed=re.findall(r'\bdisplay\s*\.\s*print(?:ln)?\s*\(\s*(?:F\s*\(\s*)?"([^"\n]*)"',clean)
+    additional=[value for value in printed if value.strip() and value!='Hello World']
+    return {'constructor_control_pins':controls,'constructor_pins_match':controls_match,
+            'explicit_spi_pins':spi,'explicit_spi_pins_match':spi_match,
+            'source_wire_candidate':native['wiring_candidate'] and controls_match and spi_match is not False,
+            'literal_display_texts':printed,'additional_display_literals':additional,
+            'manual_review_required':True}
+
+
 def model_env(proxy_url=None):
     env=dict(os.environ)
     env.update({key:'1' for key in ('OPENCODE_DISABLE_AUTOUPDATE','OPENCODE_DISABLE_MODELS_FETCH','OPENCODE_DISABLE_LSP_DOWNLOAD','OPENCODE_DISABLE_CLAUDE_CODE','OPENCODE_DISABLE_EXTERNAL_SKILLS')})
@@ -304,6 +324,7 @@ def run_pass(args):
                         edges={frozenset((e['componentId'],e['pinName']) for e in (w['start'],w['end'])) for w in doc['wires']}
                         pins_ok=len(panels)==1 and all(frozenset(((panels[0],role),(board['id'],pin))) in edges for role,pin in EXPECTED['B6']['pins'].items())
                         result.update(project_id=saved['project_id'],version=saved['version'],facts=facts(doc,'B6',source),
+                                      source_wiring=epaper_source_facts(doc,source),
                                       expected_pins_match=pins_ok,source_sha256=hashlib.sha256(source.encode()).hexdigest(),
                                       quoted_hello_world='"Hello World"' in source,centering_logic_present='getTextBounds' in source and '/ 2' in source)
                         ab.write_json(run/'final-project.json',doc)
@@ -357,7 +378,14 @@ def analyze_trace(root):
 def report(parent, output):
     roots=sorted(parent.glob('p[0-9]*'));allrows=[]
     for root in roots:allrows.extend(summarize(root))
+    qualifying=[]
+    for root in roots:
+        rows=[r for r in allrows if (root/r['run']/'run.json').exists() and r['case'] in ('B1','B2','B3','B4','B5')]
+        if rows:qualifying.append((root.name,len(rows)==5 and all(r['strict_success'] and r['error_count']<=3 for r in rows)))
+    confirmed=any(a[1] and b[1] for a,b in zip(qualifying,qualifying[1:]))
+    validations=[r for r in allrows if r['case'] in HOLDOUTS]
     lines=['# Real Qwen MCP cycles — 2026-11-04','',
+      'Verdict: '+('the required two consecutive qualifying passes were achieved.' if confirmed else 'the two-pass acceptance criterion has not yet been achieved.'),
       'Local workbench only; no SSH, production access, deployment or push. OpenCode 1.19.3 uses the existing hyperqwen/qwen3.8-27b provider.',
       'Fresh directory/session, identical neutral AGENTS.md, one complete natural user prompt, no coaching; sequential runs, 720-second timeout.',
       'Each pass pins a Git worktree and uses the actual six-tool HTTP facade and genuine REST owner. The opt-in AVR lane executes the installed compiler, not a fixture.',
@@ -377,7 +405,12 @@ def report(parent, output):
     lines+=['','## Pass scores and exact failure families']
     for root in roots:
         rows=[r for r in allrows if (root/r['run']/'run.json').exists() and r['case'] in ('B1','B2','B3','B4','B5')]
-        if not rows:continue
+        if not rows:
+            for path in root.glob('*/mcp.jsonl'):
+                for call in ab.json_lines(path):
+                    error=call.get('output',{}).get('error')
+                    if error:lines.append(f"- {path.parent.name} `{error['code']}`: `"+ab.canonical({'tool':call['name'],'arguments':call.get('arguments')})+'`')
+            continue
         success=sum(r['strict_success'] for r in rows);qualified=len(rows)==5 and all(r['strict_success'] and r['error_count']<=3 for r in rows)
         health=json.loads((root/'health.json').read_text()) if (root/'health.json').exists() else {}
         lines.append(f"{root.name}: {success}/5 strict; errors {[r['error_count'] for r in rows]}; complete={len(rows)==5}; qualifying={qualified}; revision `{health.get('revision','unknown')[:12]}`.")
@@ -408,7 +441,8 @@ def report(parent, output):
     lines+=['','## Verdict, remaining work and limits',
       'Stop requires two consecutive complete qualifying passes, each with all five strict successes and at most three MCP errors per run. No unmeasured success is claimed.',
       'Only source-bound reviews count; valid JSON strings and numeric strings may be normalized, but incomplete arguments must not be guessed or silently repaired.',
-      'Two reserved validation prompts V1/V2 are separate from tuning; their results will be reported only when run. Small sample, one model/harness, order and cache effects remain limitations.',
+      f"Reserved validation prompts V1/V2: {sum(r['strict_success'] for r in validations)}/{len(validations)} strict; {2-len(validations)} not run. They are separate from tuning; no MCP changes are made from their outcomes.",
+      'Small sample, one model/harness, order and cache effects remain limitations.',
       'The improvement bundle is measured together, without per-feature ablation: individual contributions and causal shares are not established. Prompt coverage cannot prove general reliability.',
       'B6-READY: `python scripts/mcp-bench-qwen.py pass --pass-number 6 --evidence <private-output> --cases B6 --mcp-url <explicit-URL>`; intended for the remote owner on its IDF host. No ESP32 run is performed here.',
       'B6 checks exact quoted Hello World, centering logic and native CS5/DC17/RST16/BUSY4/SCK18/SDI23/3V3/GND; independent IDF recompilation remains required on that host. It is excluded from the five-case score.',
