@@ -341,8 +341,10 @@ async def main(args):
                            'loops':[v for v in loops.values() if v>=3],'seconds':elapsed,'tokens':dict(tokens),
                            'compile_ok':compiled,'editor_matches':project_revision(editor.document)==project_revision(document),
                            'workspace_capture_error':capture_error,'independent_compile_error':compile_error,
-                           'check_called':any(c['name']=='check_project' for c in calls),
-                           'final_build_read':any(c['name']=='build_project' and c['output'].get('state')=='done' and c['output'].get('success') is True and c['output'].get('workspace_revision')==session.workspace.revision for c in calls),
+                           'check_called':any(c['name']=='check_project' or c['name']=='run' and c['output'].get('checks',{}).get('structure_status') in ('valid','invalid') for c in calls),
+                           'final_build_read':any((c['name']=='build_project' and c['output'].get('state')=='done' and c['output'].get('success') is True or
+                               c['name']=='run' and c['output'].get('compilation',{}).get('success') is True and c['output'].get('matches_current_workspace') is True)
+                               and c['output'].get('workspace_revision')==session.workspace.revision for c in calls),
                            'facts':general_facts(document,spec,source) if spec else bench.facts(document,case,source),
                            'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
                            'revision':session.workspace.revision,'proof':proof,'strict_success':False,'manual_review_required':True,
@@ -350,7 +352,8 @@ async def main(args):
                     row['code_revision'] = revision
                     row['failed_builds'] = len({c['output'].get('build_id', 'response-'+str(index))
                                                for index,c in enumerate(calls)
-                                               if c['name']=='build_project' and c['output'].get('success') is False})
+                                               if c['name']=='build_project' and c['output'].get('success') is False or
+                                               c['name']=='run' and c['output'].get('compilation',{}).get('success') is False})
                     parts = [p for m in messages for p in m.get('parts', [])] if adapter else []
                     row['harness_tool_errors'] = sum(p.get('type')=='tool' and p.get('state',{}).get('status')=='error' for p in parts)
                     row['generation_limits'] = sum(m.get('info',{}).get('finish')=='length' for m in messages) if adapter else 0

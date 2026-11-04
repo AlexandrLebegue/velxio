@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import { Check, ChevronRight, Circle, LoaderCircle, Square, X } from 'lucide-react';
 import type { AgentTurn } from '../../services/agentService';
-import { splitAgentThinking } from '../../services/agentText';
+import { formatAgentToolText, splitAgentThinking } from '../../services/agentText';
 
 export function AgentThinking({ text }: { text: string }) {
   const { t } = useTranslation();
@@ -49,7 +49,9 @@ export function AgentTimeline({ turn }: { turn: AgentTurn }) {
                 : step.status === 'error'
                   ? X
                   : Square;
-            const label = t(`agent.tools.${step.name}`, { defaultValue: step.title || step.name });
+            const label = t(`agent.tools.${step.name}`, {
+              defaultValue: formatAgentToolText(step.title || step.name),
+            });
             const statusLabel =
               step.status === 'completed' && step.result_state
                 ? t(`agent.execution.${step.result_state}`, {
@@ -72,7 +74,7 @@ export function AgentTimeline({ turn }: { turn: AgentTurn }) {
                         <span className="agent-step-name">{label}</span>
                         <span>{statusLabel}</span>
                       </summary>
-                      <pre>{details}</pre>
+                      <pre>{formatAgentToolText(details)}</pre>
                     </details>
                   ) : (
                     <div className="agent-step-label">

@@ -1,97 +1,93 @@
-# Chat and compact MCP share one project engine
+# Four chat tools, with shared project validation
 
-The integrated chat uses the existing OpenCode adapter and authenticated
-`/api/agent` session/message/event routes. It now exposes the same six core
-operations as the compact MCP: search_catalog, get_reference, save_project,
-check_project, build_project and read_artifact. Existing editor operations remain
-available for component edits and supported simulation. Legacy low-level tools
-are still accepted for resumed conversations but are omitted from discovery.
+The integrated chat uses OpenCode through the authenticated `/api/agent`
+session/message/event routes. Model discovery exposes exactly four Velxio tools.
+The external six-tool compact MCP remains unchanged.
 
-## Conversation scope
+| Tool | Purpose |
+| --- | --- |
+| `search_component` | Search boards/components; return IDs, native pins, defaults and known library names together. |
+| `components` | Create/replace the board, batch-add/update/remove parts and declare libraries. Empty arguments read current state. |
+| `connect` | Batch native wires or remove wire IDs; preserve other wires and skip exact/reversed duplicates. |
+| `run` | Capture files, check, validate/apply, compile and start supported simulation; resume pending work without IDs. |
 
-The conversation selects its project. Chat calls omit project_id, version and
-expected_version; those fields are not advertised. Each conversation owns a
-private ProjectStore, ProjectChecker and BuildService using the unchanged compact
-implementations and reviewed catalog recipes. Other conversations cannot select
-its snapshots or artifacts. The external six-tool MCP contract is unchanged.
+The conversation selects the project. The model needs no project/version/build
+IDs, separate create/save/check/compile calls or starter recipe. Legacy calls
+remain accepted for resumed conversations but are absent from discovery and new
+system instructions. Shared compact recipes are preserved; no task-specific
+recipe is added to the chat.
 
-`save_project(from_example="example:blink-led", parameters={...})` instantiates
-the same code, libraries and native wires as compact MCP. The candidate must pass
-the editor's real circuit validation and revision check before it is applied and
-its sources are materialized. An editor rejection preserves existing sources.
-Replacements retain the workspace's immutable previous revisions.
+OpenCode runs in the actual workspace with native read, write, edit, glob, grep
+and list tools. Context includes relative source paths and the active file.
+Sources remain grouped for multi-board projects. New boards receive only an
+empty source skeleton; the model authors the code. Unrelated user code/files
+are preserved when editing components or replacing boards.
 
-`save_project(sketch=source)` preserves literal source and supports a blank
-workspace. `save_project()` captures files edited using OpenCode's native tools.
-`check_project()` and build start also capture those current files. Libraries
-can be explicitly updated with `save_project(libraries=[...])`.
+## Circuit operations
 
-OpenCode starts in workspace.work; its HTTP client explicitly selects that
-directory. Every turn supplies cwd, exact relative file paths and active_file.
-File tool summaries hide the workspace's absolute path. The model need not read
-an artifact ID to find its own sketch. Native files remain grouped for projects
-with several boards; moving directories is unnecessary.
+`components` accepts `board`, `add`, `update`, `remove`, `libraries`, and optional
+board `pin_map`/`language_mode`. Adds use catalog IDs; updates/removals use mounted
+instance IDs. Responses include generated IDs, reference pins and source paths.
+A connected editor also supplies actual mounted pinouts for property variants.
 
-The initial context advertises all reviewed starter examples with their real
-parameter schemas from the shared recipe registry. No prompt classification or
-benchmark-specific recipe selection occurs. A suitable starter needs no catalog
-round trip. For other searches the chat schema requires an explicit query;
-missing query receives a precise repair message, rather than repeated browsing.
-The external compact search schema remains unchanged. Save returns a bounded
-summary of the applied components; checks retain all returned errors/warnings,
-summarize informational codes and link the complete report artifact.
+`connect` accepts `wires:[{start:{componentId,pinName},end:{componentId,pinName}}]`
+and optional `remove:[wire_id]`. No named-wiring command strings are accepted.
+Each batch forms one candidate, which passes editor validation and revision
+comparison before application. A failed batch publishes no partial circuit.
+Removing a component also removes its attached wires. Board swaps preserve IDs
+and sources, remapping pins only when explicitly requested.
 
-Blink starters expose frequency_hz for full on/off cycles per second. The
-compatible delay_ms option is explicitly per phase; the options cannot be mixed.
-Save reports the generated on/off times, full period and nominal frequency so
-an incorrect interpretation is visible before compilation. Whole-millisecond
-rounding is explicit and the timing metadata is not a runtime observation.
-Centered e-paper recipes print only the requested text; legacy demo labels are
-removed in that mode, preserving default mode and native board/SPI pins.
+Complete JSON strings used for arrays/objects and numeric/boolean strings are
+normalized losslessly; incomplete JSON is rejected, not guessed. Errors retain
+code/path/received/expected/next_action and refer to the four visible operations.
+Search is paginated and component/board-only. Library API extraction is deferred.
 
-## Build truth and editor truth
+## Run truth
 
-Chat compilation uses the genuine sealed REST owner, with the original chat
-message's authenticated request and user. A model argument or callback token
-cannot supply another compiler identity. The same configured inventory, admission
-rules, diagnostics and bounded start wait apply as in compact MCP. Missing
-inventory/toolchain/owner evidence remains an explicit error; nothing is installed.
-AVR requires the existing owner opt-in and verified installed-cache inventory.
-ESP32 retains its IDF lane and immediately unsupported simulation response.
+`run()` captures file edits and checks the exact current source/circuit with the
+shared ProjectChecker. Invalid sketches stop before compilation. The candidate
+passes the editor's validation and revision guard. Supported simulation uses the
+editor's existing compile/load/execute entry point once, without a second compact
+build first. Existing board access rules and engine acknowledgements still apply.
 
-Only done + success=true establishes compilation. Build results retain the source
-revision actually built and indicate whether it still matches current files.
-Polling an old job after editing cannot label it as a build of the new source.
-Compile failures and invalid structural checks are error steps in the timeline,
-even when the RPC itself completed. Compiler errors appear in the step summary.
-Project-mutating calls are serialized within a conversation.
+`run(simulate=false)` compiles through the shared BuildService and genuine sealed
+REST owner, bound to the original authenticated chat request/user. Inventory,
+dependency and toolchain admission are preserved; nothing is installed. ESP32
+uses this offline build path even for default `run()`, with simulation explicitly
+unsupported. Native ESP32 board/pin/template/IDF paths remain available. This
+change makes no real ESP32 build or runtime claim.
 
-Simulation remains an editor operation: compile success never acknowledges
-startup, movement, displayed pixels or sensor readings. Manual editor changes
-continue to be protected by revision comparisons and the browser lease.
+`wait_seconds` defaults to 20, maximum 60, for compilation-only work. A pending
+build stays server-side; another `run()` follows that job without an ID or a new
+compilation. Pending editor startup is observed rather than restarted.
+`action=status` reads progress, `stop` stops simulation, and `restart` explicitly
+restarts execution except that a live build is always resumed first. Stopping
+simulation never claims to cancel an already admitted backend compilation.
 
-## Bounded model generation
+Results separate compilation, startup confirmation and behavioral verification.
+Only `compilation.success=true` for current files proves compilation.
+Starting/booting is pending; only `confirmed=true` acknowledges startup. No run
+response claims functional correctness. Revision checks reject old results as
+evidence about current files. Compiler failures are failed timeline steps.
 
-AI settings include max_output_tokens (default 8192, range 512..32768) under
-advanced limits. It is passed to OpenCode's model output limit. One pathological
-response must not silently inherit a roughly 32000-token allowance. This limit
-does not repair incomplete tool arguments or establish tool/model correctness.
-OpenCode also requires a context window in this model declaration; the configurable
-context_window defaults to 65536 and should match the connected model server.
-Both limits are passed together. A configuration failure before a model request
-is reported separately from a project or Qwen failure.
+## Short file paths
 
-## Reproducible evaluation
+Tool titles/summaries show paths such as `group-1/sketch.ino`; the workspace root
+alone is `.`. Server presentation removes the exact workspace prefix, including
+paths missing their initial slash. The frontend also shortens legacy persisted
+agent/session paths and renders `<path>` wrappers as `File: ...`. Actual native
+tool arguments/results, model cwd and source contents are unaffected.
 
-`scripts/chat-bench-qwen.py` calls the real settings, session, message, SSE and
-browser-result APIs and the real OpenCode adapter. It reuses the five AVR prompts
-from the MCP evaluation, one prompt per fresh conversation, strictly sequential.
-Actual REST-owner builds are independently recompiled from final stored sources.
-MCP transport logging includes calls rejected before runtime validation.
+## Validation
 
-Its backend editor adapter checks actual packaged native pins and acknowledges
-only document application. It implements no simulator and does not establish
-browser rendering or electrical behavior. Frontend bridge/circuit/execution tests
-remain a separate check; production browser execution needs its own evidence.
-Raw events, model sessions, settings and compiler logs stay outside Git. Provider
-credentials come from existing configuration and are never committed.
+Deterministic tests cover the real four-tool HTTP transport, atomic edits,
+native wiring, source preservation, check-before-run, compiler failures,
+pending/resumed jobs, stale results, ESP32 e-paper pins and shortened paths.
+Frontend tests cover stream rendering, circuit validation and the shared execution
+pipeline. New Qwen performance has not been measured for this four-tool surface;
+earlier benchmark reports describe their frozen prior revisions. No model call,
+push or deployment is part of this change.
+
+Verified on this change: 63 agent tests, 182 compact MCP tests, 32 frontend
+agent tests and four benchmark/provenance tests passed. The Vite production
+bundle builds; targeted frontend lint and formatting checks also pass.

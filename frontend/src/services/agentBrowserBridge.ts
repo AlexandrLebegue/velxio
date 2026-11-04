@@ -133,6 +133,7 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         id,
         boardKind,
       })),
+      pinouts: inspectAgentProject().pinouts,
     };
   }
   if (command.action === 'create') {
