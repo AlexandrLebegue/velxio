@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "purpose": "Held-out natural edit and component-variant requests; no solution code or tool guidance. Freeze before any model run.",
+  "cases": {
+    "V1": {
+      "prompt": "Dans le montage déjà ouvert, garde la carte, les fils et tout le programme existant. Change la LED en bleu et la résistance en 470 ohms. Compile ensuite sans lancer la simulation et donne le résultat réel.",
+      "expected": {"board": "arduino-uno", "behavior": "existing source, IDs and wires preserved; existing LED blue; existing resistor exactly 470 ohms; real compile result"}
+    },
+    "V2": {
+      "prompt": "Je veux commander un servomoteur avec un potentiomètre à glissière sur une Arduino Uno. Le début et la fin de la glissière doivent correspondre respectivement à 0 et 180 degrés. Prépare les connexions et le code, compile sans démarrer la simulation, puis rapporte ce qui a effectivement fonctionné.",
+      "expected": {"board": "arduino-uno", "component_counts": {"servo": 1, "slide-potentiometer": 1}, "behavior": "sliding potentiometer full analog range maps 0..180; native signal and power/ground pins consistent; real compile result"}
+    }
+  }
+}

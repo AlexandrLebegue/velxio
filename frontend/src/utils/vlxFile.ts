@@ -52,6 +52,9 @@ export interface VlxPayload {
     activeFileGroupId: string;
     languageMode?: string;
     serialBaudRate?: number;
+    rotation?: number;
+    boardOptions?: BoardInstance['boardOptions'];
+    spiffsFiles?: BoardInstance['spiffsFiles'];
     sdFiles?: Array<{ name: string; contentB64: string }>;
     /** Declared library manifest (compile scope). Absent in old files. */
     libraries?: string[];

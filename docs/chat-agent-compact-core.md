@@ -61,12 +61,14 @@ passes the editor's validation and revision guard. Supported simulation uses the
 editor's existing compile/load/execute entry point once, without a second compact
 build first. Existing board access rules and engine acknowledgements still apply.
 
-`run(simulate=false)` compiles through the shared BuildService and genuine sealed
-REST owner, bound to the original authenticated chat request/user. Inventory,
-dependency and toolchain admission are preserved; nothing is installed. ESP32
-uses this offline build path even for default `run()`, with simulation explicitly
-unsupported. Native ESP32 board/pin/template/IDF paths remain available. This
-change makes no real ESP32 build or runtime claim.
+`run(simulate=false)` uses the application compiler when the connected editor
+advertises that capability, retaining its real compiler ownership and access
+policy. Imports resolve actual installed dependencies; missing verified registry
+packages use the existing managed Library API. Older editor adapters fall back
+to the shared sealed offline BuildService without installing anything. ESP32
+simulation remains explicitly unsupported; its board/pin/template/IDF and
+external offline MCP paths remain available. No real ESP32 build or runtime
+claim is made here.
 
 `wait_seconds` defaults to 20, maximum 60, for compilation-only work. A pending
 build stays server-side; another `run()` follows that job without an ID or a new
@@ -96,8 +98,8 @@ native wiring, source preservation, check-before-run, compiler failures,
 pending/resumed jobs, stale results, ESP32 e-paper pins and shortened paths.
 Frontend tests cover stream rendering, circuit validation and the shared execution
 pipeline. New Qwen performance has not been measured for this four-tool surface;
-earlier benchmark reports describe their frozen prior revisions. No model call,
-push or deployment is part of this change.
+earlier benchmark reports describe their frozen prior revisions. Later real-model measurements are recorded separately in
+`chat-library-sync-20261104.md`; no push or source deployment is claimed here.
 
 Verified on this change: 63 agent tests, 182 compact MCP tests, 32 frontend
 agent tests and four benchmark/provenance tests passed. The Vite production
