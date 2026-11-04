@@ -54,6 +54,32 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertEqual(ids, sorted(self.catalog._entries))
         self.assertNotIn("next_cursor", page)
 
+    def test_compound_query_merges_all_terms_without_duplicates_and_paginates_stably(self):
+        query = 'e-ink epaper 1.54'
+        combined = self.catalog.search_catalog(query=query, kind='component', limit=50)
+        expected = set()
+        for term in query.split():
+            expected.update(item['id'] for item in self.catalog.search_catalog(query=term, kind='component', limit=50)['items'])
+        ids, offset = [], 0
+        while True:
+            page = self.catalog.search_catalog(query=query, kind='component', limit=1, offset=offset)
+            self.assertTrue(page['ok'])
+            self.assertEqual(page['total'], len(expected))
+            self.assertEqual(page['query_used'], combined['query_used'])
+            ids.extend(item['id'] for item in page['items'])
+            if page['next_offset'] is None:
+                self.assertFalse(page['has_more'])
+                break
+            self.assertGreater(page['next_offset'], offset)
+            offset = page['next_offset']
+        self.assertEqual(set(ids), expected)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn('component:epaper-1in54-bw', ids)
+        empty_page = self.catalog.search_catalog(query='servo', kind='component', offset=100)
+        self.assertEqual(empty_page['query_used'], ['servo'])
+        self.assertEqual(empty_page['items'], [])
+        self.assertIsNone(empty_page['next_offset'])
+
     def test_offset_boundaries_maximum_limit_and_filtered_totals(self):
         first = self.catalog.search_catalog(kind="example", limit=50)
         self.assertEqual(len(first["items"]), 50)

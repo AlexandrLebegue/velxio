@@ -1,0 +1,64 @@
+{
+  "method": "deterministic scripted client; strict six-tool schemas; controlled owner adapter",
+  "real_llm_used": false,
+  "real_compiler_used": false,
+  "scenarios": [
+    {
+      "scenario": "led-uno",
+      "tool_calls": 9,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 3,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 2,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 1,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "servo-nano",
+      "tool_calls": 8,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 2,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 2,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 1,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "eink-esp32",
+      "tool_calls": 9,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 3,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 2,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 1,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    }
+  ]
+}

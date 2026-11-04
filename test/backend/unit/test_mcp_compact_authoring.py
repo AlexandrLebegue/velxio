@@ -63,7 +63,7 @@ class CompactAuthoringTests(unittest.TestCase):
         self.assertIn('expected', error['message'])
         return error
 
-    def test_board_reference_is_directly_saveable_and_other_bridges_unknown(self):
+    def test_board_reference_is_directly_saveable_and_native_templates_are_complete(self):
         doc = self.board()
         self.assertEqual(len(doc['boards']), 1)
         self.assertEqual(doc['components'], [])
@@ -71,8 +71,21 @@ class CompactAuthoringTests(unittest.TestCase):
         self.assertEqual(doc['fileGroups'][group], [{'name': 'sketch.ino', 'content': ''}])
         self.assertEqual(doc['activeBoardId'], doc['boards'][0]['id'])
         self.assertTrue(self.store.save_project(document=doc)['ok'])
-        for key in ('board:arduino-uno', 'component:led'):
-            self.assertEqual(self.catalog.get_reference(id=key, section='project')['data'], 'unknown')
+        for key in ('board:arduino-uno', 'board:arduino-nano'):
+            result = self.catalog.get_reference(id=key, section='project')
+            self.assertTrue(self.store.save_project(document=result['data'])['ok'])
+            self.assertEqual(result['instance_template']['boardKind'], key.split(':', 1)[1])
+            self.assertFalse(result['execution']['supported'])
+        for key in ('led', 'resistor', 'servo', 'epaper-1in54-bw'):
+            fragment = self.catalog.get_reference(id='component:' + key, section='project')['data']
+            template = fragment['instance_template']
+            self.assertTrue({'id', 'metadataId', 'x', 'y', 'properties'} <= template.keys())
+            self.assertEqual(template['metadataId'], key)
+            self.assertEqual(fragment['components'], [template])
+            candidate = copy.deepcopy(doc)
+            candidate['components'].append(template)
+            self.assertTrue(self.store.save_project(document=candidate)['ok'])
+        self.assertIn('example:epaper-1in54-uno-hello', self.screen()['example_references'])
         self.assertEqual(self.catalog.get_reference(id='board-velxio-esp32', section='project')['data'], doc)
         self.screen()['components'][0]['properties']['refreshMs'] = 999
         self.assertEqual(self.screen()['components'][0]['properties'],

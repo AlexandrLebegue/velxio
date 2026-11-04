@@ -14,8 +14,8 @@ from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
 
 DESCRIPTIONS = {
-    'search_catalog': 'Search IDs, names, tags, summaries and keywords; case, hyphens, spaces and underscores are ignored. Five results by default; offset pagination, limit up to 50.',
-    'get_reference': 'Reference by catalog id. section=project gives a saveable native ESP32 document or an e-paper component fragment with exact pinNames; other bridges may be unknown. Example source code only in section=code.',
+    'search_catalog': 'Search IDs, names, tags, summaries and keywords. If a compound phrase has no matches, merge matching words without duplicate IDs; query_used lists the actual terms. Use next_offset for pagination, never repeat the same page. Five results by default, limit up to 50.',
+    'get_reference': 'Reference by catalog ID. section=project gives a saveable native board document or a component instance_template with bare metadataId, defaults and known pinNames. Follow example_references for library APIs; read source with section=code. Boards report execution unsupported: builds do not start simulation.',
     'save_project': 'Save a native document or allowlisted changes with CAS for updates. Get a minimal document/fragment via get_reference(section=project) first. Validation errors identify path, received and expected.',
     'check_project': 'Structural checks of an exact version; no electrical or functional certification.',
     'build_project': 'Start or query an ESP32 offline build in the active REST owner; no installation.',
@@ -106,6 +106,8 @@ class CompactRuntime:
 
     async def call(self, name, arguments):
         arguments = _normalize_arguments(arguments)
+        if name == 'run_project':
+            return {'ok': False, 'error': {'code': 'unsupported', 'message': 'Simulation is not supported by the six-tool MCP. Use build_project for compilation only; do not poll for startup.'}}
         if name not in TOOL_SCHEMAS or not isinstance(arguments, dict):
             return {'ok': False, 'error': {'code': 'invalid_argument', 'message': 'Unknown tool or invalid arguments'}}
         if self.closing:

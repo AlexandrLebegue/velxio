@@ -1,3 +1,10 @@
+# Current small-model contracts
+
+See [the English contract and deterministic evaluation report](../../../../docs/mcp-compact-small-model-contracts.md)
+for native instance templates, merged keyword search, `query_used`, `next_offset`,
+linked examples, and explicit unsupported simulation behavior. The historical
+milestone notes below describe earlier stages and are retained for context.
+
 # Contrats et catalogue compact — jalon 2k
 
 Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `BuildService.build_project` ajoute au 3c l'orchestration persistante injectable ; **son intégration réelle au propriétaire REST est bloquée**, sans compilateur réel par défaut. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema. Aucun `test_project`.

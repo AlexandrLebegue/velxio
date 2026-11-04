@@ -305,6 +305,15 @@ class ProjectChecker:
                 kind = attr["type"]
                 valid = (kind in ("string", "color", "select") and isinstance(value, str) or
                          kind == "number" and type(value) in (int, float) or kind == "boolean" and type(value) is bool)
+                default = entry.get("defaults", {}).get(name)
+                if (not valid and name in entry.get("defaults", {})
+                    and type(value) is type(default) and value == default):
+                    # Some authored UI defaults contradict their declared
+                    # property type (e.g. LED brightness=1, type=string).
+                    # Preserve the exact native default, but do not certify it.
+                    emit("attribute_default_type_unknown", ap, "unknown", "Native default contradicts the documented type; preserved as authored")
+                    unavailable.add("attribute_type_consistency")
+                    continue
                 if not valid:
                     emit("attribute_type", ap, "error", "Attribute value does not match its documented type")
                 elif ("options" in attr and value not in attr["options"]) or (kind == "number" and (value < attr.get("min", value) or value > attr.get("max", value))):

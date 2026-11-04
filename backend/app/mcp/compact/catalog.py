@@ -99,16 +99,34 @@ class Catalog:
             def normalize(value):
                 return re.sub(r"[-_\s]+", "", value.casefold())
             normalized = normalize(query)
-            matches = []
-            for e in self._entries.values():
-                fields = [e["id"], e["name"], e["summary"], *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]
-                if (kind == "all" or e["kind"] == kind) and any(normalized in normalize(field) for field in fields):
-                    matches.append(e)
+            indexed = [(e, [normalize(field) for field in [e["id"], e["name"], e["summary"],
+                        *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]])
+                       for e in self._entries.values() if kind == "all" or e["kind"] == kind]
+            matches = [e for e, fields in indexed if any(normalized in field for field in fields)]
             matches.sort(key=lambda e: e["id"])
+            used = [query] if query.strip() else []
+            # Expand only a genuinely empty result set, never an empty page.
+            # Score the union by matching terms, then ID: stable across pages.
+            if not matches and len(query.split()) > 1:
+                terms = {}
+                for word in query.split():
+                    if len(normalize(word)) >= 2:
+                        terms.setdefault(normalize(word), word)
+                scored, matched_terms = [], set()
+                for entry, fields in indexed:
+                    hits = {term for term in terms if any(term in field for field in fields)}
+                    if hits:
+                        scored.append((len(hits), entry))
+                        matched_terms.update(hits)
+                matches = [entry for _, entry in sorted(scored, key=lambda item: (-item[0], item[1]["id"]))]
+                used = [word for term, word in terms.items() if term in matched_terms]
             page = matches[offset:offset + limit]
             return {"ok": True, "revision": self.revision, "items": [
-                {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300]} for e in page],
-                "total": len(matches), "has_more": offset + len(page) < len(matches)}
+                {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300],
+                 **({"metadataId" if e["kind"] == "component" else "boardKind": e["key"]} if e["kind"] in ("component", "board") else {})} for e in page],
+                "query_original": query, "query_used": used,
+                "total": len(matches), "has_more": offset + len(page) < len(matches),
+                "next_offset": offset + len(page) if offset + len(page) < len(matches) else None}
         return self._guard(run)
 
     def get_reference(self, **arguments):
@@ -148,6 +166,8 @@ class Catalog:
                             summary_libraries[name] = {"name": name, "sources": group["sources"], "evidence_count": 0}
                         summary_libraries[name]["evidence_count"] += 1
             overview.update({"libraries": list(summary_libraries.values()) or "unknown", "init": "unknown"})
+            examples = self.related_examples(e["id"], limit=8)
+            overview["example_references"] = [item["id"] for item in examples]
             if "panel" in e and e["panel"]:
                 overview["panel"] = e["panel"]
             if "fqbn" in e:
@@ -163,22 +183,36 @@ class Catalog:
                           raw for raw in self._snapshot.get("raw_inputs", [])
                           if raw["decoded_sha256"] in {f["sha256"] for f in files}
                       ]} if project else "unknown"}
-            return {"ok": True, "id": e["id"], "revision": self.revision, "section": section, "data": values[section]}
+            if e["kind"] == "component":
+                values["project"]["example_references"] = overview["example_references"]
+            result = {"ok": True, "id": e["id"], "revision": self.revision, "section": section, "data": values[section]}
+            if section == "project" and e["kind"] in ("component", "board"):
+                # Keep board data directly saveable; metadata belongs outside
+                # that native document. Component data remains an append fragment.
+                result["instance_template"] = copy.deepcopy(values["project"]["boards"][0] if e["kind"] == "board"
+                                                            else values["project"]["instance_template"])
+                result["example_references"] = overview["example_references"]
+            if e["kind"] == "board":
+                result["execution"] = {"supported": False, "state": "unsupported",
+                    "message": "The six-tool MCP compiles projects; it does not run a simulator. Do not poll for simulation startup."}
+            return result
         return self._guard(run)
 
     @staticmethod
     def _native_fragment(entry):
-        # Deliberately limited bridge. Unknown shapes must never be guessed.
-        if entry["id"] == "board:esp32":
+        if entry["kind"] == "board":
+            mode = "arduino" if "arduino" in entry.get("languages", []) else next(iter(entry.get("languages", [])), "arduino")
+            instance_id = "esp" if entry["key"] == "esp32" else entry["key"] + "-1"
             return {"format": "velxio-project", "version": 1,
-                    "boards": [{"id": "esp", "boardKind": entry["key"], "x": 0, "y": 0,
-                                "activeFileGroupId": "sketch", "languageMode": "arduino"}],
-                    "fileGroups": {"sketch": [{"name": "sketch.ino", "content": ""}]},
-                    "components": [], "wires": [], "activeBoardId": "esp"}
-        if entry["id"] == "component:epaper-1in54-bw":
-            return {"components": [{"id": "epd", "metadataId": entry["key"], "x": 300, "y": 0,
-                                    "properties": copy.deepcopy(entry["defaults"])}],
-                    "pinNames": [pin["name"] for pin in entry["pins"]]}
+                    "boards": [{"id": instance_id, "boardKind": entry["key"], "x": 0, "y": 0,
+                                "activeFileGroupId": "sketch", "languageMode": mode}],
+                    "fileGroups": {"sketch": [{"name": "main.py" if mode == "micropython" else "sketch.ino", "content": ""}]},
+                    "components": [], "wires": [], "activeBoardId": instance_id}
+        if entry["kind"] == "component":
+            template = {"id": "epd" if entry["key"] == "epaper-1in54-bw" else entry["key"] + "-1",
+                        "metadataId": entry["key"], "x": 300, "y": 0, "properties": copy.deepcopy(entry.get("defaults", {}))}
+            return {"components": [copy.deepcopy(template)], "instance_template": template,
+                    "pinNames": [pin["name"] for pin in entry["pins"]] if isinstance(entry["pins"], list) else "unknown"}
         return "unknown"
 
     @staticmethod

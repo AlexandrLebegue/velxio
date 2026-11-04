@@ -154,6 +154,41 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await run)["state"], "running")
         self.assertFalse(session.pending)
 
+    async def test_esp32_run_refuses_before_browser_or_build_dispatch(self):
+        value = document()
+        value['boards'][0]['boardKind'] = 'esp32'
+        session = self.runtime.create('owner', value)
+        with patch.object(self.runtime, 'browser_command', new=AsyncMock()) as browser:
+            result = await asyncio.wait_for(self.runtime.call_tool(session, 'run_project', {}), .5)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['error']['code'], 'unsupported')
+        self.assertEqual(result['state'], 'unsupported')
+        self.assertFalse(result['confirmed'])
+        browser.assert_not_awaited()
+
+    async def test_esp32_pending_harness_tool_refuses_without_waiting_for_dispatch(self):
+        value = document()
+        value['boards'][0]['boardKind'] = 'esp32'
+        session = self.runtime.create('owner', value)
+        async def events(ready):
+            ready.set()
+            yield {'type': 'message.part.updated', 'properties': {'part': {
+                'id': 'pending-run', 'messageID': 'assistant', 'sessionID': 'harness',
+                'type': 'tool', 'tool': 'velxio_run_project', 'state': {'status': 'pending', 'input': {}, 'raw': ''}}}}
+            await asyncio.Event().wait()  # Reproduce a provider that never finishes arguments.
+        session.adapter = SimpleNamespace(session_id='harness', events=events)
+        done = asyncio.get_running_loop().create_future()
+        collector = asyncio.create_task(self.runtime._collect(session, asyncio.Event(), done))
+        try:
+            with self.assertRaises(AgentError) as caught:
+                await asyncio.wait_for(done, .5)
+            self.assertEqual(caught.exception.code, 'unsupported')
+            self.assertEqual(session.pending, {})
+        finally:
+            collector.cancel()
+            await asyncio.gather(collector, return_exceptions=True)
+            session.adapter = None
+
     async def test_catalog_uses_existing_metadata(self):
         session = self.runtime.create("owner", document())
         response = await self.runtime.call_tool(session, "search_catalog", {"query": "led", "kind": "component"})
@@ -167,7 +202,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         response = await self.runtime.call_tool(session, "search_catalog", {"query": "e-ink epaper 1.54", "kind": "component", "limit": 10})
         self.assertTrue(any(item["id"] == "component:epaper-1in54-bw" for item in response["items"]))
         self.assertEqual(response["query_original"], "e-ink epaper 1.54")
-        self.assertIn(response["query_used"], ("e-ink", "epaper", "1.54"))
+        self.assertTrue(set(response["query_used"]) & {"e-ink", "epaper", "1.54"})
         page = await self.runtime.call_tool(session, "search_catalog", {"kind": "component", "limit": 1})
         self.assertEqual(page["next_offset"], 1)
         following = await self.runtime.call_tool(session, "search_catalog", {"kind": "component", "limit": 1, "offset": page["next_offset"]})

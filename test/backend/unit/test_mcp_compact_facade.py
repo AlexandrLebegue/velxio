@@ -35,7 +35,7 @@ class FacadeTests(unittest.IsolatedAsyncioTestCase):
             runtime = CompactRuntime(object())
             result = await runtime.call('search_catalog', {})
         self.assertEqual(len(result['items']), 5)
-        self.assertEqual((await runtime.call('run_project', {}))['error']['code'], 'invalid_argument')
+        self.assertEqual((await runtime.call('run_project', {}))['error']['code'], 'unsupported')
         self.assertEqual((await runtime.call('save_project', {}))['error']['code'], 'owner_integration_required')
         await runtime.close()
 
