@@ -8,19 +8,20 @@ import os
 from pathlib import Path
 
 from .catalog import Catalog, bounded
-from .contracts import TOOL_SCHEMAS
+from .contracts import TOOL_SCHEMAS, model_input_schema
 from .errors import normalize_error
+from .arguments import normalize
 from .projects import ProjectStore, MISSING, pointer, validate_save_arguments, validation_error
 from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
 
 DESCRIPTIONS = {
-    'search_catalog': 'Search IDs, names, tags, summaries and keywords. Example hits advertise from_example.supported and the complete accepted parameter schema, so they can be saved without reading or rewriting source. Compound queries fall back to merged words; query_used lists the actual terms. Responses are at most 24 KiB. Follow next_request/next_offset, never repeat a page. truncated marks partial results. Default limit 5, max 50.',
-    'get_reference': 'Reference by catalog ID. Examples advertise save_project(from_example=...) parameters; example_references and example_options link component examples and their schemas. section=project gives native board documents or component templates. Default limit 20, max 50; follow next_request to continue the same section, or next_section when complete. Each response is at most 24 KiB. Only data_complete=true is a whole template; partial fragments must not be saved. Source is only in section=code, with file byte offsets for long source. Builds do not start simulation.',
-    'save_project': 'Prefer from_example=<catalog example ID> with its advertised short parameters to create a native project without rewriting code or wiring. Only examples advertising from_example.supported=true are accepted. Otherwise save plain sketch text or a native document. Wires use native start/end endpoints with componentId and pinName. Updates require project_id and expected_version. Source text is never unescaped or silently repaired.',
-    'check_project': 'Check an exact version, including unusable Arduino sketches. Errors are listed first with file, observed, expected and next_action. ok means the tool returned a report, not that the sketch is valid. No electrical or functional certification.',
-    'build_project': 'Start an offline build, waiting up to wait_seconds (default 20, max 60) for its final result. Claim build success only for state=done AND success=true; ok only means the tool request succeeded. Otherwise follow next_action. Read first_error before separate capped warnings. No installation or simulation.',
-    'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices. All tool failures have error.code/path/received/expected/next_action; correct that value before retrying.',
+    'search_catalog': 'Find components, boards or examples. Search examples first for ready code and native wires; supported examples advertise parameters. Default 5 results; follow next_offset only when needed.',
+    'get_reference': 'Read a catalog ID. project gives native templates and pin names; code gives source; libraries gives dependencies. Follow next_request for partial pages. Use only complete templates.',
+    'save_project': 'Create from_example with advertised parameters, or save plain sketch text, or a native document. Updates need project_id and expected_version. Native wires use start/end componentId and pinName. Never stringify objects/arrays.',
+    'check_project': 'Validate an exact saved version. Fix error-severity issues before building. partial means unavailable checks, not proof of behavior. Returns repair guidance.',
+    'build_project': 'Compile start(project_id,version); board_id defaults to the active board. Wait up to 20 seconds (max 60). Only state=done AND success=true proves compilation; follow next_action otherwise.',
+    'read_artifact': 'Read an immutable artifact in byte slices; continue at next_offset until eof. No simulation or hardware execution.',
 }
 _SCOPE = ContextVar('compact_http_scope', default=None)
 BASE = Path(__file__).parent
@@ -106,11 +107,11 @@ class CompactRuntime:
                 ToolchainInventory(doc['toolchain_root'], doc['toolchains'], complete=doc['complete']))
 
     async def call(self, name, arguments):
-        arguments = _normalize_arguments(arguments)
+        arguments = normalize(name, arguments)
         return normalize_error(await self._call(name, arguments), name, arguments)
 
     async def _call(self, name, arguments):
-        arguments = _normalize_arguments(arguments)
+        arguments = normalize(name, arguments)
         if name == 'run_project':
             return {'ok': False, 'error': {'code': 'unsupported', 'message': 'Simulation is not supported by the six-tool MCP. Use build_project for compilation only; do not poll for startup.'}}
         if name not in TOOL_SCHEMAS or not isinstance(arguments, dict):
@@ -178,14 +179,14 @@ def create_facade(app, **runtime_options):
 
     @mcp._mcp_server.list_tools()
     async def list_tools():
-        return [Tool(name=name, description=DESCRIPTIONS[name], inputSchema=schema['inputSchema'])
+        return [Tool(name=name, description=DESCRIPTIONS[name], inputSchema=model_input_schema(name))
                 for name, schema in TOOL_SCHEMAS.items()]
 
     # Normalize before schema validation; the SDK would otherwise reject cursor.
     @mcp._mcp_server.call_tool(validate_input=False)
     async def call_tool(name, arguments):
         try:
-            arguments = _normalize_arguments(arguments)
+            arguments = normalize(name, arguments)
             if name in TOOL_SCHEMAS:
                 validate(instance=arguments, schema=TOOL_SCHEMAS[name]['inputSchema'])
             result = bounded(await runtime.call(name, arguments))

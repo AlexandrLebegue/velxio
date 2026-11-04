@@ -550,6 +550,8 @@ class ProjectStore:
         return normalize_error(result, tool, arguments)
 
     def save_project(self, **arguments):
+        from .arguments import normalize
+        arguments = normalize('save_project', arguments)
         def run():
             raw = validate_save_arguments(arguments)
             sketch_info = None

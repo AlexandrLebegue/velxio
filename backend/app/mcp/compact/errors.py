@@ -86,6 +86,12 @@ def normalize_error(result, tool=None, arguments=None):
     error['received'] = str(error['received'])[:200]
     error['expected'] = str(error['expected'])[:500]
     error['next_action'] = str(error['next_action'])[:500]
+    if tool == 'save_project' and code == 'invalid_argument' and isinstance(arguments,dict):
+        if isinstance(arguments.get('changes'),str):
+            error['next_action'] = 'Send changes as an actual array: [{"op":"set","path":"<intended native path>","value":"<intended value>"}]. Keep project_id and expected_version from the last save. For source replacement, use the short sketch text field; for construction, prefer a supported from_example with scalar parameters. Do not resend a cut JSON string.'
+        elif isinstance(arguments.get('document'),str):
+            error['next_action'] = 'document must be a complete native object, not an incomplete quoted fragment. Use a supported from_example with scalar parameters, or sketch=<plain source> for a board-only project. Never invent missing data.'
+
     return {**result, 'error': error}
 
 

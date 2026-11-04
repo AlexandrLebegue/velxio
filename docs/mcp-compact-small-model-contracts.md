@@ -392,3 +392,29 @@ Final validation for milestone 4h: `test_agent.py` — **31 tests OK**;
 `test_mcp_compact*.py` — **173 tests OK**, including eight pagination regressions.
 The scenario regression reproduces the checked-in JSON report exactly. Tests
 use temporary isolated stores and controlled compiler adapters only.
+
+## Native authoring and scalar peripheral variants
+
+The discovery schema is compact; full native document validation remains on the
+server. Complete JSON-encoded document/changes/parameter containers and numeric
+strings are accepted without modifying source strings. Incomplete structures
+are refused. For build start, an omitted board_id selects the exact version's
+active board; a terminal successful result is still required.
+
+Native pad names are extracted from the installed web components and packaged
+with hashes, including the editor's native endpoint aliases and selectable pin
+variants. Unknown components remain unknown. The 8-pin SPI SSD1306 and native
+4-pin I2C SSD1306 are distinct components. No named connection command exists.
+
+Reviewed example parameters expose ordinary reusable behaviors: LED resistance
+and color; button momentary/toggle with debouncing; servo sweep/fixed angle or
+analog potentiometer control; numeric sensor readouts on serial/LCD/OLED with
+optional threshold LED/buzzer outputs. Source and native wiring are generated
+together, including required libraries. Parameter schemas are returned by
+search/reference. E-paper's optional align=center uses actual font metrics on
+both supported boards. Default ESP32 e-paper control and SPI pins are preserved.
+
+AVR builds require an explicit owner opt-in and a real installed-cache inventory.
+The compile runs inside the genuine REST admission lane, using closed verified
+library sources; no core/library installation occurs during compilation. Existing
+ESP32 IDF admission and verification are retained, with no AVR fallback for ESP32.

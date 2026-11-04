@@ -219,8 +219,10 @@ def run_pass(args):
             port_proxy=free_port();proxy_url=f'http://127.0.0.1:{port_proxy}/v1'
             tracer=subprocess.Popen([sys.executable,__file__,'proxy','--evidence',str(root),'--port',str(port_proxy)],stdout=(root/'proxy.log').open('w'),stderr=subprocess.STDOUT,start_new_session=True)
             time.sleep(1)
+        deadline_file=root.parent/'deadline.json'
+        deadline=json.loads(deadline_file.read_text())['unix'] if deadline_file.exists() else None
         for case in cases:
-            if (root/'STOP').exists():break
+            if (root/'STOP').exists() or deadline is not None and time.time()>=deadline-10:break
             label=case if case.startswith('V') else f'P{args.pass_number}-{case}'
             run=root/label;run.mkdir(exist_ok=True)
             project=root/'projects'/label;project.mkdir(parents=True)
@@ -233,7 +235,7 @@ def run_pass(args):
             ab.write_json(run/'run.json',meta);print('START',label,flush=True);started=time.monotonic()
             with (run/'opencode.jsonl').open('w') as out,(run/'opencode.stderr').open('w') as err:
                 process=subprocess.Popen(['opencode','run','--pure','--format','json','--dir',str(project),'--title',label,prompt],cwd=project,env=model_env(proxy_url),stdout=out,stderr=err,start_new_session=True)
-                try:process.wait(timeout=720);meta.update(status='finished',exit_code=process.returncode)
+                try:process.wait(timeout=min(720,max(1,deadline-time.time()-10)) if deadline else 720);meta.update(status='finished',exit_code=process.returncode)
                 except subprocess.TimeoutExpired:ab.stop(process);meta.update(status='timeout',exit_code=process.returncode)
                 except BaseException:ab.stop(process);raise
                 finally:meta['seconds']=round(time.monotonic()-started,2);ab.write_json(run/'run.json',meta)
@@ -275,6 +277,101 @@ def run_pass(args):
         ab.write_json(root/'cleanup.json',{'server_stopped':server is None or server.poll() is not None,'worktree_removed':not worktree.exists()})
 
 
+def analyze_trace(root):
+    """Compare one malformed argument at three actual transport boundaries."""
+    wire=[]
+    for path in sorted((root/'http').glob('*.response.sse')):
+        calls={}
+        for line in path.read_text(errors='replace').splitlines():
+            if not line.startswith('data:'):continue
+            try:chunk=json.loads(line[5:])
+            except ValueError:continue
+            for choice in chunk.get('choices',[]):
+                for part in choice.get('delta',{}).get('tool_calls',[]):
+                    call=calls.setdefault(part.get('index',0),{'name':'','arguments':''})
+                    call['name']+=part.get('function',{}).get('name','')
+                    call['arguments']+=part.get('function',{}).get('arguments','')
+        for call in calls.values():
+            try:arguments=json.loads(call['arguments'])
+            except ValueError:continue
+            if not isinstance(arguments,dict):continue
+            for field in ('changes','document','parameters'):
+                value=arguments.get(field)
+                if not isinstance(value,str):continue
+                try:json.loads(value);continue
+                except ValueError:pass
+                wire.append({'name':call['name'].removeprefix('velxio_'),'arguments':arguments,'field':field,'value':value,'wire_file_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    incoming=[call for path in root.glob('*/mcp.jsonl') for call in ab.json_lines(path)]
+    events=[e['part'] for path in root.glob('*/opencode.jsonl') for e in ab.json_lines(path) if e.get('type')=='tool_use']
+    proof=[]
+    for call in wire:
+        mcp=any(c['name']==call['name'] and c.get('arguments')==call['arguments'] for c in incoming)
+        oc=any(e.get('tool')=='velxio_'+call['name'] and e.get('state',{}).get('input')==call['arguments'] for e in events)
+        if oc and mcp:
+            proof.append({**call,'opencode_identical':True,'mcp_incoming_identical':True,
+                          'finding':'Malformed/incomplete structured string already exists in Qwen API tool-call output; no change across OpenCode or MCP incoming HTTP.'})
+            break
+    ab.write_json(root/'trace-analysis.json',proof)
+    return proof
+
+
+def report(parent, output):
+    roots=sorted(parent.glob('p[0-9]*'));allrows=[]
+    for root in roots:allrows.extend(summarize(root))
+    lines=['# Real Qwen MCP cycles — 2026-11-04','',
+      'Local workbench only; no SSH, production access, deployment or push. OpenCode 1.19.3 uses the existing hyperqwen/qwen3.8-27b provider.',
+      'Fresh directory/session, identical neutral AGENTS.md, one complete natural user prompt, no coaching; sequential runs, 720-second timeout.',
+      'Each pass pins a Git worktree and uses the actual six-tool HTTP facade and genuine REST owner. The opt-in AVR lane executes the installed compiler, not a fixture.',
+      'Installed core, CLI and library sources are verified by real inventory hashes. Trusted local recipes; no claim of OS network isolation.',
+      'Independent recompilation reads immutable stored source. Strict success additionally requires a version/source-bound manual review of wiring, exact values and code behavior.',
+      'Compilation does not validate displayed pixels, motion, sensor accuracy or LED timing. C/W/V/S/B below mean compile/wiring/values/sketch/behavior.',
+      '', '| Pass/case | MCP | Errors by code | Loops >=3 | Tokens | Seconds | C/W/V/S/B | Strict | Final build read |',
+      '| --- | ---: | --- | --- | ---: | ---: | --- | --- | --- |']
+    for row in allrows:
+        root=next(root for root in roots if (root/row['run']/'run.json').exists())
+        review_file=root/row['run']/'review.json';review=json.loads(review_file.read_text()) if review_file.exists() else {}
+        flags='/'.join(('Y' if value is True else 'N' if value is False else '?') for value in [row['compile_ok'],*[review.get(k) for k in ('wiring','values','sketch','behavior')]])
+        errors=', '.join(k+':'+str(v) for k,v in sorted(row['errors'].items())) or '0'
+        lines.append(f"| {row['run']} | {row['calls']} | {errors} | {row['loops']} | {row['tokens'].get('total','?')} | {row.get('seconds','running')} | {flags} | {str(row['strict_success']) if row['reviewed'] else 'pending review'} | {row['final_build_read']} |")
+    lines+=['','## Pass scores and exact failure families']
+    for root in roots:
+        rows=[r for r in allrows if (root/r['run']/'run.json').exists() and r['case'] in ('B1','B2','B3','B4','B5')]
+        if not rows:continue
+        success=sum(r['strict_success'] for r in rows);qualified=len(rows)==5 and all(r['strict_success'] and r['error_count']<=3 for r in rows)
+        health=json.loads((root/'health.json').read_text()) if (root/'health.json').exists() else {}
+        lines.append(f"{root.name}: {success}/5 strict; errors {[r['error_count'] for r in rows]}; complete={len(rows)==5}; qualifying={qualified}; revision `{health.get('revision','unknown')[:12]}`.")
+        errors={}
+        for path in root.glob('*/mcp.jsonl'):
+            for call in ab.json_lines(path):
+                error=call.get('output',{}).get('error')
+                if not error:continue
+                code=error['code'];candidate=ab.canonical({'tool':call['name'],'arguments':call.get('arguments')})
+                if code not in errors or len(candidate)<len(errors[code]):errors[code]=candidate
+        for code,call in sorted(errors.items())[:5]:lines.append(f'- `{code}`: `{call}`')
+    lines+=['','## Changes and evidence',
+      '- `1e36e2d1`: removed named wiring, retaining native start/end wires, e-paper pins and all ESP32 paths. 31 agent + 168 compact tests passed.',
+      '- `825f95e9`: real AVR inventory/admission and regression bench. Genuine HTTP/MCP control returned done/success=true/test_only=false with a real HEX; 31 agent + 171 compact tests passed.']
+    notes=parent/'cycle-notes.json'
+    if notes.exists():lines.extend('- '+note for note in json.loads(notes.read_text()))
+    trace=[]
+    for root in roots:
+        file=root/'trace-analysis.json'
+        if file.exists():trace+=json.loads(file.read_text())
+    if trace:
+        p=trace[0];lines+=['', 'HTTP trace: the malformed value is already present in the Qwen API response; OpenCode tool input and MCP incoming HTTP are identical.',
+            'Exact observed upstream value: `'+ab.canonical({p['field']:p['value']})+'`. The internal distinction between model generation and the Qwen server parser is not observable here.']
+    lines+=['','## Verdict, remaining work and limits',
+      'Stop requires two consecutive complete qualifying passes, each with all five strict successes and at most three MCP errors per run. No unmeasured success is claimed.',
+      'Only source-bound reviews count; valid JSON strings and numeric strings may be normalized, but incomplete arguments must not be guessed or silently repaired.',
+      'Two reserved validation prompts V1/V2 are separate from tuning; their results will be reported only when run. Small sample, one model/harness, order and cache effects remain limitations.',
+      'B6-READY: `scripts/mcp-bench-qwen.py pass --cases B6 --mcp-url <explicit URL>`; intended for the remote owner on its IDF host. No ESP32 run is performed here.',
+      'B6 checks exact quoted Hello World, centering logic and native CS5/DC17/RST16/BUSY4/SCK18/SDI23/3V3/GND; independent IDF recompilation remains required on that host. It is excluded from the five-case score.',
+      'Raw HTTP bodies, sessions, snapshots and compiler logs remain outside Git; authorization headers and provider keys are never logged or committed.']
+    if len(lines)>150:raise ValueError('Report would exceed 150 lines; curate the accumulated notes first')
+    output.write_text('\n'.join(lines)+'\n')
+    return allrows
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
     run=sub.add_parser('pass');run.add_argument('--evidence',type=Path,required=True);run.add_argument('--pass-number',type=int,required=True)
@@ -284,10 +381,14 @@ def main():
     pr=sub.add_parser('proxy');pr.add_argument('--evidence',type=Path,required=True);pr.add_argument('--port',type=int,required=True)
     au=sub.add_parser('audit');au.add_argument('--evidence',type=Path,required=True);au.add_argument('--run',required=True);au.add_argument('--case',required=True)
     au.add_argument('--arduino-cli',type=Path,required=True);au.add_argument('--toolchain',type=Path,required=True)
+    tr=sub.add_parser('trace-analysis');tr.add_argument('root',type=Path)
+    rp=sub.add_parser('report');rp.add_argument('parent',type=Path);rp.add_argument('--output',type=Path,default=HERE.parent/'docs/mcp-bench-qwen-20261104.md')
     su=sub.add_parser('summary');su.add_argument('root',type=Path)
     args=p.parse_args()
     if args.action=='pass':run_pass(args)
     elif args.action=='proxy':proxy(args)
+    elif args.action=='trace-analysis':print(json.dumps(analyze_trace(args.root),indent=2))
+    elif args.action=='report':report(args.parent,args.output)
     elif args.action=='audit':print(json.dumps(audit(args.evidence,args.run,args.case,args.arduino_cli,args.toolchain),indent=2))
     else:print(json.dumps(summarize(args.root),indent=2))
 

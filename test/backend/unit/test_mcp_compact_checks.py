@@ -150,7 +150,7 @@ class ProjectCheckTests(unittest.TestCase):
 
     def test_undocumented_pins_are_unknown_not_invalid(self):
         doc = document()
-        doc["components"][0]["metadataId"] = "led"
+        doc["components"][0]["metadataId"] = "custom-chip"
         doc["components"][0]["properties"] = {}
         doc["wires"][0]["end"]["pinName"] = "unverified-pin"
         result = self.check(self.saved(doc))

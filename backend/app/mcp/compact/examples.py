@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import math
 
 from .catalog import CatalogError
 
@@ -9,9 +10,11 @@ BLINK = 'example:blink-led'
 SERVO = 'example:uno-servo'
 EPAPER = 'example:epaper-1in54-uno-hello'
 RECIPES = {
-    BLINK: {'board': {'type': 'string', 'enum': ['arduino-uno'], 'default': 'arduino-uno'},
+    BLINK: {'board': {'type': 'string', 'enum': ['arduino-uno','arduino-nano'], 'default': 'arduino-uno'},
             'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000},
             'external_led': {'type': 'boolean', 'default': False},
+            'resistance_ohms': {'type':'integer','minimum':10,'maximum':1000000,'default':1000},
+            'led_color': {'type':'string','enum':['red','green','blue','yellow','white'],'default':'red'},
             'pins': {'type': 'object', 'properties': {'LED': {'type': 'integer', 'minimum': 2, 'maximum': 13, 'default': 13}}, 'additionalProperties': False}},
     SERVO: {'board': {'type': 'string', 'enum': ['arduino-uno', 'arduino-nano'], 'default': 'arduino-uno'},
             'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000, 'description': 'Fixed-angle mode only: supply angle as well.'},
@@ -20,10 +23,19 @@ RECIPES = {
     EPAPER: {'board': {'type': 'string', 'enum': ['arduino-uno', 'esp32'], 'default': 'arduino-uno'},
              'text': {'type': 'string', 'minLength': 1, 'maxLength': 16, 'default': 'Velxio'},
              'frame': {'type': 'boolean', 'default': False},
+             'align': {'type':'string','enum':['original','center'],'default':'original'},
              'pins': {'type': 'object', 'properties': {role: {'type': 'integer', 'minimum': 2, 'maximum': 33}
                       for role in ('CS', 'DC', 'RST', 'BUSY')}, 'additionalProperties': False,
                       'description': 'Defaults: Uno CS=10 DC=9 RST=8 BUSY=7; ESP32 CS=5 DC=17 RST=16 BUSY=4. Controls must be distinct. Uno allows 2..10; ESP32 allows 2,4,5,12..17,21,22,25..27,32,33. SPI, serial and reserved pins are excluded.'}},
 }
+
+
+from .peripherals import SCHEMAS as PERIPHERAL_SCHEMAS
+RECIPES.update(PERIPHERAL_SCHEMAS)
+RECIPES[SERVO].update(control={'type':'string','enum':['sweep','potentiometer'],'default':'sweep'},
+    analog_pin={'type':'string','enum':['A0','A1','A2','A3','A4','A5'],'default':'A0'},
+    input_component={'type':'string','enum':['potentiometer','slide-potentiometer'],'default':'potentiometer'},
+    sample_ms={'type':'integer','minimum':1,'maximum':1000,'default':15})
 
 
 def recipe_metadata(reference_id):
@@ -35,6 +47,11 @@ def recipe_metadata(reference_id):
 
 
 def uses_component(reference_id, component):
+    if reference_id in PERIPHERAL_SCHEMAS:
+        actual = {'pushbutton','led','resistor'} if reference_id=='example:button-led' else {'hc-sr04' if 'hcsr04' in reference_id else 'dht22','lcd1602-i2c','ssd1306-i2c-4pin','led','resistor','buzzer'}
+        return component in actual
+    if reference_id==SERVO and component in ('potentiometer','slide-potentiometer'):
+        return True
     return component in ({BLINK: ('led', 'resistor'), SERVO: ('servo',), EPAPER: ('epaper-1in54-bw',)}.get(reference_id, ()))
 
 
@@ -49,7 +66,8 @@ def _checked(parameters, fields, path='/parameters'):
         kind = spec['type']
         if kind == 'object':
             _checked(value, spec['properties'], pointer(path, key))
-        elif (kind == 'integer' and (type(value) is not int or not spec['minimum'] <= value <= spec['maximum'])
+        elif (kind == 'number' and (type(value) not in (int,float) or not math.isfinite(value) or not spec['minimum'] <= value <= spec['maximum'])
+              or kind == 'integer' and (type(value) is not int or not spec['minimum'] <= value <= spec['maximum'])
               or kind == 'boolean' and type(value) is not bool
               or kind == 'string' and (not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value)
                   or 'enum' in spec and value not in spec['enum']
@@ -64,6 +82,9 @@ def _replace(source, old, new, count=1):
 
 
 def instantiate(catalog, reference_id, parameters):
+    if reference_id in PERIPHERAL_SCHEMAS:
+        from .peripherals import instantiate as peripheral
+        return peripheral(catalog,reference_id,parameters)
     entry = catalog._entries.get(reference_id)
     if reference_id not in RECIPES or entry is None or entry['kind'] != 'example':
         raise CatalogError('unsupported', 'No reviewed native recipe for this example; select one advertising from_example.supported=true')
@@ -105,6 +126,7 @@ def instantiate(catalog, reference_id, parameters):
             for key in ('led', 'resistor'):
                 native = catalog.get_reference(id='component:' + key, section='project')['data']['instance_template']
                 native.update(x=450 if key == 'led' else 300, y=100)
+                native['properties'].update({'value':str(values['resistance_ohms'])} if key=='resistor' else {'color':values['led_color']})
                 doc['components'].append(native)
             doc['wires'] = [
                 {'id': 'led-drive', 'start': {'componentId': board['id'], 'pinName': str(pin)}, 'end': {'componentId': 'resistor-1', 'pinName': '1'}},
@@ -116,6 +138,8 @@ def instantiate(catalog, reference_id, parameters):
         pin = pins.get('PWM', 9)
         source = _replace(source, '#define SERVO_PIN 9', f'#define SERVO_PIN {pin}')
         source = source.replace('pin 9', 'pin ' + str(pin))
+        if values['control']=='potentiometer' and 'angle' in parameters:
+            raise CatalogError('invalid_argument','Choose either potentiometer control or a fixed angle')
         if 'angle' in values:
             if source.count('void loop() {') != 1:
                 raise CatalogError('unsupported', 'Servo loop no longer matches the reviewed recipe')
@@ -132,6 +156,14 @@ def instantiate(catalog, reference_id, parameters):
         pins = {'PWM': pin}
         if board_kind == 'arduino-nano':
             source = source.replace('Arduino Uno', 'Arduino Nano')
+        if values['control']=='potentiometer':
+            native = catalog._native_fragment(catalog._entries['component:'+values['input_component']])['instance_template']
+            native.update(id='control',x=450,y=180);doc['components'].append(native)
+            for role, board_pin in [('VCC','5V'),('GND','GND.1'),('SIG',values['analog_pin'])]:
+                doc['wires'].append({'id':'control-'+role,'start':{'componentId':board['id'],'pinName':board_pin},'end':{'componentId':'control','pinName':role}})
+            source = source.split('void loop() {')[0] + 'void loop() {\n  int angle = map(analogRead(' + values['analog_pin'] + '), 0, 1023, 0, 180);\n  myServo.write(angle);\n  delay(' + str(values['sample_ms']) + ');\n}\n'
+            source = source.replace('Servo Sweep demo','Potentiometer servo control')
+
     else:
         defaults = dict(zip(('CS', 'DC', 'RST', 'BUSY'), (10, 9, 8, 7) if board_kind == 'arduino-uno' else (5, 17, 16, 4)))
         pins = {**defaults, **pins}
@@ -145,6 +177,14 @@ def instantiate(catalog, reference_id, parameters):
                            for line in source.split('\n') if not line.startswith('// Wiring:'))
         source = f'// Native {board_kind} variant; ' + ', '.join(f'{role}={pin}' for role, pin in pins.items()) + '\n' + source
         source = _replace(source, 'F("Velxio")', 'F(' + json.dumps(values['text'], ensure_ascii=False) + ')')
+        if values['align']=='center':
+            import re
+            cursor = re.search(r'    display.setCursor\([^\n]+\);',source)
+            if cursor is None:
+                raise CatalogError('unsupported','The reviewed display source no longer has the expected cursor anchor')
+            text_literal = json.dumps(values['text'],ensure_ascii=False)
+            center = '    int16_t tx, ty; uint16_t tw, th;\n    display.getTextBounds(' + text_literal + ', 0, 0, &tx, &ty, &tw, &th);\n    display.setCursor((display.width() - tw) / 2 - tx, (display.height() - th) / 2 - ty);'
+            source = source[:cursor.start()]+center+source[cursor.end():]
         if values['frame']:
             source = _replace(source, '    display.fillScreen(GxEPD_WHITE);', '    display.fillScreen(GxEPD_WHITE);\n    display.drawRect(0, 0, 200, 200, GxEPD_BLACK);')
         for wire in doc['wires']:

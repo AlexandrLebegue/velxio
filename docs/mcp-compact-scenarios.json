@@ -15,7 +15,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 4200,
+      "max_catalog_response_bytes": 9332,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -37,7 +37,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 3846,
+      "max_catalog_response_bytes": 4543,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -59,7 +59,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2815,
+      "max_catalog_response_bytes": 2967,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -83,7 +83,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 7,
-      "max_catalog_response_bytes": 3489,
+      "max_catalog_response_bytes": 8740,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -105,7 +105,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 5,
-      "max_catalog_response_bytes": 3343,
+      "max_catalog_response_bytes": 4031,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -127,7 +127,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 5,
-      "max_catalog_response_bytes": 2497,
+      "max_catalog_response_bytes": 2649,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -150,7 +150,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2003,
+      "max_catalog_response_bytes": 2194,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -171,7 +171,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2712,
+      "max_catalog_response_bytes": 3056,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -192,7 +192,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 3026,
+      "max_catalog_response_bytes": 3102,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -220,7 +220,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2003,
+      "max_catalog_response_bytes": 2194,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -241,7 +241,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2712,
+      "max_catalog_response_bytes": 3056,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -262,7 +262,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 3026,
+      "max_catalog_response_bytes": 3102,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,

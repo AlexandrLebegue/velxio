@@ -247,3 +247,13 @@ TOOL_SCHEMAS = {name: {"name": name, "inputSchema": deepcopy(schema),
                        "outputSchema": output_schema(name),
                        "implemented": True}
                 for name, schema in _INPUTS.items()}
+
+
+def model_input_schema(name):
+    """Small discovery schema; authoritative native validation remains unchanged."""
+    schema = deepcopy(TOOL_SCHEMAS[name]['inputSchema'])
+    if name == 'save_project':
+        properties = schema['properties']
+        properties['document'] = {'type':'object', 'description':'Complete native snapshot from get_reference(section=project). Validated in full by the server.'}
+        schema['properties'] = {key:properties[key] for key in ('from_example','parameters','sketch','board','libraries','project_id','expected_version','board_id','changes','document')}
+    return schema

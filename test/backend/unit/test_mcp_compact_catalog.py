@@ -160,7 +160,7 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertEqual(epaper["init"], "unknown")
 
     def test_unknown_pins_protocol_and_honest_limitations(self):
-        item = self.catalog.get_reference(id="component:led")["data"]
+        item = self.catalog.get_reference(id="component:custom-chip")["data"]
         self.assertEqual(item["pins"], "unknown")
         self.assertEqual(item["protocol"], "unknown")
         self.assertTrue(any("pinCount" in line for line in item["limitations"]))
