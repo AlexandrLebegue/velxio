@@ -1,8 +1,11 @@
 """Session-bound MCP tools sharing the FastAPI lifecycle."""
 from contextvars import ContextVar
+from copy import deepcopy
 import json
 
-from app.mcp.compact.contracts import TOOL_SCHEMAS
+from app.mcp.compact.contracts import TOOL_SCHEMAS, model_input_schema
+from app.mcp.compact.arguments import normalize
+from app.mcp.compact.errors import normalize_error, preview, pointer
 from .settings import AgentError
 
 
@@ -32,9 +35,28 @@ def create_tools(runtime):
         "get_reference": ("Read a NEW component or board once with section=overview (default): real pins, attributes, defaults and available library information together. Other sections are for specific missing details; do not repeat reads of known pins.", TOOL_SCHEMAS["get_reference"]["inputSchema"]),
     }
 
+    # Same six core operations, bound to this conversation instead of making
+    # the model shuttle opaque IDs and immutable versions between calls.
+    for name in ('save_project', 'check_project', 'build_project', 'read_artifact'):
+        schema = deepcopy(model_input_schema(name))
+        for key in ('if', 'then', 'else'):
+            schema.pop(key, None)
+        for key in ('project_id', 'version', 'expected_version'):
+            schema['properties'].pop(key, None)
+        schema['required'] = [key for key in schema.get('required', [])
+                              if key not in ('project_id', 'version', 'expected_version', 'action')]
+        schemas[name] = ('', schema)
+    schemas['save_project'] = ('Save the current project. Prefer from_example with its advertised parameters for complete code and native wires. Otherwise edit source files in cwd and call with no arguments, or supply plain sketch text. Never stringify objects. No project IDs needed.', schemas['save_project'][1])
+    schemas['check_project'] = ('Check the current files and circuit. Fix error-severity findings before build; partial is not runtime proof. No arguments needed.', schemas['check_project'][1])
+    schemas['build_project'] = ('Compile the current project. No arguments needed; default action=start waits 20 seconds, max 60 via wait_seconds. Only state=done AND success=true proves compilation. Follow next_action if running. No simulation.', schemas['build_project'][1])
+    schemas['read_artifact'] = ('Read a build log or firmware artifact in byte slices. Project source files are already in cwd: read workspace.active_file directly.', schemas['read_artifact'][1])
+    hidden = {'create_project', 'update_circuit', 'disconnect_wire'}
+    schemas['search_catalog'] = ('Find a ready example first: kind=example and query=<short keyword>. Supported examples advertise parameters for code and wiring. Use next_offset for another page; never repeat an unchanged search.', schemas['search_catalog'][1])
+
     @mcp._mcp_server.list_tools()
     async def list_tools():
-        return [Tool(name=name, description=description, inputSchema=schema) for name, (description, schema) in schemas.items()]
+        order = list(TOOL_SCHEMAS) + [name for name in schemas if name not in TOOL_SCHEMAS and name not in hidden]
+        return [Tool(name=name, description=schemas[name][0], inputSchema=schemas[name][1]) for name in order]
 
     @mcp._mcp_server.call_tool(validate_input=False)
     async def call_tool(name, arguments):
@@ -42,13 +64,21 @@ def create_tools(runtime):
             session = runtime.by_token(authorization.get().removeprefix("Bearer "))
             if name not in schemas:
                 raise AgentError("unknown_tool", "Unknown tool")
-            validate(arguments or {}, schemas[name][1])
-            result = await runtime.call_tool(session, name, arguments or {})
+            arguments = normalize(name, arguments or {})
+            validate(arguments, schemas[name][1])
+            result = normalize_error(await runtime.call_tool(session, name, arguments), name, arguments)
             raw = json.dumps(result, ensure_ascii=False)
             if len(raw.encode()) > 24 * 1024:
                 raw = json.dumps({"ok": False, "error": {"code": "quota_exceeded", "message": "Result exceeds 24 KiB; request a narrower catalog section"}})
         except Exception as exc:
-            raw = json.dumps({"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"), "message": str(exc)[:1000]}})
+            from jsonschema import ValidationError
+            details = {}
+            if isinstance(exc, ValidationError):
+                details = {'path': pointer(exc.absolute_path), 'received': preview(exc.instance),
+                           'expected': str(exc.message)[:500]}
+                if isinstance(arguments, dict) and set(arguments) & {'project_id', 'version', 'expected_version'}:
+                    details['next_action'] = f'Call {name} again without project_id, version or expected_version. This conversation selects the project automatically.'
+            raw = json.dumps(normalize_error({"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"), "message": str(exc)[:500], **details}}, name, arguments))
         return [TextContent(type="text", text=raw)]
 
     child = mcp.streamable_http_app()

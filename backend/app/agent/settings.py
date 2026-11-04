@@ -21,6 +21,7 @@ class ConnectionSettings(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096)
     clear_api_key: bool = False
     max_steps: int = Field(default=20, ge=1, le=100)
+    max_output_tokens: int = Field(default=8192, ge=512, le=32768)
     timeout_seconds: int = Field(default=300, ge=30, le=1800)
 
     @field_validator("base_url")

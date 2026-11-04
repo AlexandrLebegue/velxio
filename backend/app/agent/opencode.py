@@ -47,12 +47,14 @@ class OpenCodeAdapter:
                 "npm": "@ai-sdk/openai-compatible",
                 "name": "Velxio connection",
                 "options": {"baseURL": self.settings.base_url, "apiKey": self.settings.api_key or "local"},
-                "models": {self.settings.model: {"name": self.settings.model}},
+                "models": {self.settings.model: {"name": self.settings.model, "tool_call": True,
+                                                 "limit": {"output": self.settings.max_output_tokens}}},
             }},
             "permission": {
                 "*": "deny", "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow", "list": "allow",
                 "external_directory": "deny", "velxio_*": "allow",
             },
+            "tools": {"*": False, "read": True, "edit": True, "glob": True, "grep": True, "list": True, "velxio_*": True},
             "agent": {"velxio": {"mode": "primary", "description": "Edit and simulate the active Velxio electronics project", "steps": self.settings.max_steps}},
             "default_agent": "velxio",
             "mcp": {"velxio": {"type": "remote", "url": self.callback_url, "headers": {"Authorization": "Bearer " + self.token}, "oauth": False}},
@@ -70,7 +72,8 @@ class OpenCodeAdapter:
             self.process = await asyncio.create_subprocess_exec(binary, "serve", "--hostname", "127.0.0.1", "--port", str(port), cwd=self.work, env=env, stdout=log, stderr=log)
         finally:
             log.close()
-        self.client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", auth=("opencode", self.password), timeout=15, trust_env=False)
+        self.client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", auth=("opencode", self.password),
+                                       headers={"x-opencode-directory": str(self.work.resolve())}, timeout=15, trust_env=False)
         try:
             for _ in range(150):
                 if self.process.returncode is not None:

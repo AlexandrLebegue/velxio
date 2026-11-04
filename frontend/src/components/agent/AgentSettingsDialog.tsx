@@ -26,6 +26,7 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
       api_key: form.api_key || null,
       clear_api_key: !!form.clear_api_key,
       max_steps: form.max_steps,
+      max_output_tokens: form.max_output_tokens ?? 8192,
       timeout_seconds: form.timeout_seconds,
     };
     try {
@@ -125,6 +126,19 @@ export function AgentSettingsDialog({ settings, onSaved, onClose }: Props) {
           )}
           <details>
             <summary>{t('agent.limits')}</summary>
+            <label>
+              {t('agent.maxOutputTokens')}
+              <input
+                type="number"
+                min={512}
+                max={32768}
+                value={form.max_output_tokens ?? 8192}
+                onChange={(event) =>
+                  setForm({ ...form, max_output_tokens: Number(event.target.value) })
+                }
+              />
+            </label>
+            <small>{t('agent.outputTokensHelp')}</small>
             <label>
               {t('agent.maxSteps')}
               <input

@@ -12,6 +12,7 @@ export interface AgentSettings {
   has_api_key?: boolean;
   available?: boolean;
   max_steps: number;
+  max_output_tokens?: number;
   timeout_seconds: number;
 }
 
