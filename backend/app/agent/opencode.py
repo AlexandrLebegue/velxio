@@ -48,7 +48,8 @@ class OpenCodeAdapter:
                 "name": "Velxio connection",
                 "options": {"baseURL": self.settings.base_url, "apiKey": self.settings.api_key or "local"},
                 "models": {self.settings.model: {"name": self.settings.model, "tool_call": True,
-                                                 "limit": {"output": self.settings.max_output_tokens}}},
+                                                 "limit": {"context": self.settings.context_window,
+                                                           "output": self.settings.max_output_tokens}}},
             }},
             "permission": {
                 "*": "deny", "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow", "list": "allow",
@@ -92,6 +93,15 @@ class OpenCodeAdapter:
 
     async def create_session(self):
         response = await self.client.post("/session", json={"title": "Velxio project"})
+        if not response.is_success:
+            # Never include the inline provider configuration or credentials.
+            try:
+                issues = response.json().get('data', {}).get('issues', [])
+                details = '; '.join('.'.join(map(str, issue.get('path', []))) + ': ' + str(issue.get('message', 'Invalid setting'))
+                                    for issue in issues[:3])
+            except (ValueError, TypeError, AttributeError):
+                details = ''
+            raise AgentError('harness_configuration', 'OpenCode could not create the conversation. ' + (details or f'HTTP {response.status_code}'), 503)
         response.raise_for_status()
         self.session_id = response.json()["id"]
         return self.session_id

@@ -47,6 +47,8 @@
   "maxSteps": "Maximum steps",
   "maxOutputTokens": "Maximum tokens per response",
   "outputTokensHelp": "Larger values allow longer code but can prolong a stuck response.",
+  "contextWindow": "Context window (tokens)",
+  "contextWindowHelp": "Set this to the context size supported by your model server.",
   "timeout": "Turn timeout (seconds)",
   "test": "Test connection",
   "testing": "Testing…",

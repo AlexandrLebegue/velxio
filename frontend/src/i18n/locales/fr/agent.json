@@ -47,6 +47,8 @@
   "maxSteps": "Étapes maximum",
   "maxOutputTokens": "Tokens maximum par réponse",
   "outputTokensHelp": "Une valeur plus élevée autorise du code plus long, mais peut prolonger une réponse bloquée.",
+  "contextWindow": "Fenêtre de contexte (tokens)",
+  "contextWindowHelp": "Indiquez la taille de contexte prise en charge par votre serveur de modèle.",
   "timeout": "Durée maximum d’un tour (secondes)",
   "test": "Tester la connexion",
   "testing": "Vérification…",

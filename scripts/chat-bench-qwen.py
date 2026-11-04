@@ -271,6 +271,9 @@ async def main(args):
                     row['file_tool_calls'] = sum(p.get('type')=='tool' and not p.get('tool','').startswith('velxio_') for p in parts)
                     ab.write_json(directory/'result.json',row);rows.append(row);ab.write_json(root/'summary.json',rows)
                     print('DONE',case,ab.canonical({k:row[k] for k in ('calls','errors','loops','seconds','compile_ok','editor_matches','final_build_read','proof')}),flush=True)
+                    if not proof.get('single_exact_prompt') and not proof.get('models'):
+                        print('STOP: harness failed before a model request; repair configuration before retrying.', flush=True)
+                        break
                 finally:
                     stream.cancel();await asyncio.gather(stream,return_exceptions=True)
                     if 'session' in locals():await runtime.stop(session)

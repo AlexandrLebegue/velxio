@@ -94,6 +94,18 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.workspace.capture(), before)
         self.assertEqual(self.session.project_service.current, binding)
 
+    async def test_a_rejected_source_update_does_not_poison_the_next_save(self):
+        await self.runtime.call_tool(self.session, 'save_project', {'from_example': 'example:blink-led'})
+        original = self.runtime.browser_command
+        async def reject(session, action, **data):
+            return {'ok': False, 'error': {'code': 'revision_conflict', 'message': 'Manual edit preserved'}}
+        self.runtime.browser_command = reject
+        result = await self.runtime.call_tool(self.session, 'save_project', {'sketch': 'void setup() {}\nvoid loop() { delay(10); }\n'})
+        self.assertFalse(result['ok'])
+        self.runtime.browser_command = original
+        next_save = await self.runtime.call_tool(self.session, 'save_project', {})
+        self.assertTrue(next_save['ok'], next_save)
+
     async def test_another_conversation_cannot_select_the_first_project(self):
         await self.runtime.call_tool(self.session, 'save_project', {'from_example': 'example:blink-led'})
         other = self.runtime.create('other', self.session.workspace.capture())

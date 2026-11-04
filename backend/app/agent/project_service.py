@@ -25,6 +25,17 @@ class ChatProjectService:
         self.current = None
         self.build_revisions = {}
 
+    def restore_head(self, saved, document):
+        # A candidate is published before the editor can inspect it. If the
+        # editor refuses an update, restore the store head too; otherwise the
+        # next ordinary save would fail its version comparison forever.
+        if self.current and saved['project_id'] == self.current['project_id']:
+            value = copy.deepcopy(document)
+            for board in value['boards']:
+                board.setdefault('libraries', [])
+            restored = self.store.save_project(document=value, project_id=saved['project_id'], expected_version=saved['version'])
+            self.current = {**restored, 'revision': project_revision(document)} if restored.get('ok') else None
+
     def snapshot(self):
         document = self.session.workspace.capture()
         revision = project_revision(document)
@@ -69,6 +80,7 @@ class ChatProjectService:
         try:
             result = await self.runtime.apply_candidate(self.session, candidate)
             if not result.get('ok'):
+                self.restore_head(saved, current)
                 return result
             # Only materialize after the editor has acknowledged this candidate.
             self.session.workspace.sync(self.session.workspace.document, self.session.workspace.revision)
@@ -76,6 +88,7 @@ class ChatProjectService:
             self.session.workspace.document = previous
             self.session.workspace.revision = project_revision(previous)
             self.session.workspace.groups = previous_groups
+            self.restore_head(saved, current)
             raise
         # The editor may canonicalize native pin aliases. Persist that exact
         # normalized snapshot before check/build, rather than the pre-apply copy.

@@ -13,6 +13,7 @@ export interface AgentSettings {
   available?: boolean;
   max_steps: number;
   max_output_tokens?: number;
+  context_window?: number;
   timeout_seconds: number;
 }
 

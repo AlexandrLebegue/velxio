@@ -59,6 +59,10 @@ AI settings include max_output_tokens (default 8192, range 512..32768) under
 advanced limits. It is passed to OpenCode's model output limit. One pathological
 response must not silently inherit a roughly 32000-token allowance. This limit
 does not repair incomplete tool arguments or establish tool/model correctness.
+OpenCode also requires a context window in this model declaration; the configurable
+context_window defaults to 65536 and should match the connected model server.
+Both limits are passed together. A configuration failure before a model request
+is reported separately from a project or Qwen failure.
 
 ## Reproducible evaluation
 

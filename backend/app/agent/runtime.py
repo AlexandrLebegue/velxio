@@ -398,7 +398,7 @@ class AgentRuntime:
         call_id = secrets.token_hex(12)
         self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "running"})
         try:
-            if name in ('search_catalog', 'get_reference', 'read_artifact', 'observe_project', 'get_project', 'stop_project'):
+            if name in ('search_catalog', 'get_reference', 'read_artifact', 'observe_project', 'stop_project'):
                 result = await self._call_tool(session, name, args)
             else:
                 async with session.tool_lock:
