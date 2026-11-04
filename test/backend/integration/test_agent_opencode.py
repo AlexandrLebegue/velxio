@@ -34,6 +34,8 @@ class ModelFixture(BaseHTTPRequestHandler):
     failure = None
     circuit = False
     thinking = False
+    swap = False
+    pico = False
 
     @staticmethod
     def project_in(value):
@@ -64,9 +66,17 @@ class ModelFixture(BaseHTTPRequestHandler):
                 name, args = "velxio_connection_probe", {"ok": True}
             elif self.circuit and "velxio_get_project" not in used:
                 name, args = "velxio_get_project", {}
+            elif self.pico and "velxio_change_board" not in used:
+                name, args = "velxio_change_board", {"board": "raspberry-pi-pico", "language_mode": "micropython"}
+            elif self.swap and "velxio_get_reference" not in used:
+                name, args = "velxio_get_reference", {"id": "component:led", "section": "overview"}
+            elif self.swap and used.count("velxio_change_board") < 2:
+                name, args = "velxio_change_board", {"board": "esp32" if "velxio_change_board" not in used else "arduino-uno"}
             elif "write" not in used:
                 code = "void setup() { Serial.begin(9600); pinMode(12, OUTPUT); }\nvoid loop() { digitalWrite(12, HIGH); Serial.println(42); delay(100); }\n" if self.circuit else "void setup() { Serial.begin(9600); }\nvoid loop() { Serial.println(42); delay(100); }\n"
                 name, args = "write", {"filePath": "group-1/sketch.ino", "content": code}
+                if self.pico:
+                    args = {"filePath": "group-1/main.py", "content": "from machine import Pin\nimport time\nled = Pin(12, Pin.OUT)\nwhile True:\n    led.value(1)\n    print(42)\n    time.sleep_ms(100)\n"}
             elif self.circuit and used.count("velxio_update_circuit") < 2:
                 project = self.project_in([item for item in body["messages"] if item.get("role") == "tool"])
                 if not project: raise AssertionError("Project tool output not found")
@@ -84,6 +94,7 @@ class ModelFixture(BaseHTTPRequestHandler):
                         raise AssertionError(f"MCP tool {suffix} unavailable; tools: {list(tools)}")
                     if candidates[0] not in used:
                         name, args = candidates[0], {}
+                        if self.pico and suffix == "observe_project": args = {"duration_ms": 2000}
                         break
             self.calls.append(name or "answer")
             if len(self.calls) > 16:
@@ -176,7 +187,7 @@ class OpenCodeIntegration(unittest.IsolatedAsyncioTestCase):
                             print(log.read_text()[-5000:] if log.exists() else "No harness log")
                         self.assertFalse(errors_found, errors_found)
                         self.assertIsNone(ModelFixture.failure)
-                        self.assertEqual(actions, ["run", "observe"])
+                        self.assertEqual(actions, ["inspect_project", "run", "observe"])
                         self.assertIn("Serial.println(42)", (session.workspace.work / "group-1/sketch.ino").read_text())
                         self.assertEqual(session.messages[-1]["role"], "assistant")
                         self.assertIn("42", session.messages[-1]["content"])
@@ -196,6 +207,8 @@ if __name__ == "__main__":
     if "--serve-model" in sys.argv:
         ModelFixture.circuit = "--circuit" in sys.argv
         ModelFixture.thinking = "--thinking" in sys.argv
+        ModelFixture.swap = "--swap-board" in sys.argv
+        ModelFixture.pico = "--pico" in sys.argv
         server = ThreadingHTTPServer(("127.0.0.1", 0), ModelFixture)
         print(f"AGENT_TEST_MODEL_URL=http://127.0.0.1:{server.server_port}/v1", flush=True)
         try:

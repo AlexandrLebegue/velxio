@@ -5,8 +5,18 @@ import { buildVlxPayload } from '../utils/vlxFile';
 import type { VlxPayload } from '../utils/vlxFile';
 import type { BoardInstance } from '../types/board';
 import { projectRevision } from './agentService';
-import { executeAgentProjectRun } from './projectExecution';
-import { AgentCircuitError, prepareAgentCircuit, settleAgentCircuit } from './agentCircuit';
+import {
+  executeAgentProjectRun,
+  projectExecutionStatus,
+  cancelAgentProjectRun,
+} from './projectExecution';
+import {
+  AgentCircuitError,
+  prepareAgentCircuit,
+  settleAgentCircuit,
+  inspectAgentProject,
+  describeAgentPart,
+} from './agentCircuit';
 import { normalizeAgentDocument } from './agentDocument';
 import { flushElectricalResolve } from '../simulation/spice/electricalResolveHook';
 
@@ -25,8 +35,8 @@ export async function applyAgentSnapshot(
   const current = buildVlxPayload();
   const boardConfig = (payload: VlxPayload) =>
     payload.boards.map(({ serialBaudRate: _baud, ...board }) => board);
-  if (JSON.stringify(boardConfig(current)) !== JSON.stringify(boardConfig(document)))
-    throw new Error('Board configuration changed. Start a new conversation for the new board.');
+  const boardsChanged =
+    JSON.stringify(boardConfig(current)) !== JSON.stringify(boardConfig(document));
   const candidate = await prepareAgentCircuit(document);
   if ((await projectRevision()) !== expectedRevision)
     throw new AgentCircuitError(
@@ -34,6 +44,22 @@ export async function applyAgentSnapshot(
       'The project changed while validating connections. Your edits were preserved.',
     );
   const sim = useSimulatorStore.getState();
+  if (boardsChanged) {
+    // Recreate the engines too: changing only boardKind would leave the old
+    // MCU/bridge attached to the new picture. loadProjectState keeps project identity.
+    sim.loadProjectState({ ...candidate, boards: candidate.boards as BoardInstance[] });
+    try {
+      await settleAgentCircuit(candidate);
+      sim.recalculateAllWirePositions();
+      await flushElectricalResolve();
+    } catch (error) {
+      if ((await projectRevision()) === (await projectRevision(candidate))) {
+        sim.loadProjectState({ ...current, boards: current.boards as BoardInstance[] });
+      }
+      throw error;
+    }
+    return;
+  }
   const circuitChanged =
     JSON.stringify(current.components) !== JSON.stringify(candidate.components) ||
     JSON.stringify(normalizeAgentDocument(current).wires) !== JSON.stringify(candidate.wires);
@@ -81,6 +107,9 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         message: 'Manual project edits were preserved. Stop and synchronize before continuing.',
       },
     };
+  if (command.action === 'inspect_project') return inspectAgentProject();
+  if (command.action === 'describe_part')
+    return describeAgentPart(String(command.kind), String(command.part_id));
   if (command.action === 'validate_circuit') {
     const candidate = await prepareAgentCircuit(command.document as VlxPayload);
     return {
@@ -100,6 +129,10 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
       revision,
       validated: true,
       connections: (command.document as VlxPayload).wires.length,
+      boards: (command.document as VlxPayload).boards.map(({ id, boardKind }) => ({
+        id,
+        boardKind,
+      })),
     };
   }
   if (command.action === 'create') {
@@ -110,16 +143,7 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         ok: false,
         error: { code: 'project_not_empty', message: 'The current project is no longer empty.' },
       };
-    sim.loadProjectState({
-      boards: document.boards as BoardInstance[],
-      fileGroups: document.fileGroups,
-      components: document.components,
-      wires: document.wires,
-      activeBoardId: document.activeBoardId,
-    });
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    await applyAgentSnapshot(document, expected);
     const revision = await projectRevision();
     return {
       ok: revision === command.revision,
@@ -142,13 +166,14 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
     return { ...(await executeAgentProjectRun()), applied_revision: revision, revision };
   }
   if (command.action === 'stop') {
+    cancelAgentProjectRun();
     const sim = useSimulatorStore.getState();
     sim.boards.filter((board) => board.running).forEach((board) => sim.stopBoard(board.id));
     return { ok: true, state: 'stopped' };
   }
   if (command.action === 'observe') {
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(Number(command.duration_ms) || 0, 5000)),
+      setTimeout(resolve, Math.min(Number(command.duration_ms) || 0, 15000)),
     );
     if ((await projectRevision()) !== expected)
       return {
@@ -158,9 +183,8 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
     const sim = useSimulatorStore.getState();
     const board = sim.boards.find((item) => item.id === sim.activeBoardId);
     return {
-      ok: true,
+      ...projectExecutionStatus(),
       revision: expected,
-      state: board?.running ? 'running' : 'stopped',
       serial: (board?.serialOutput ?? sim.serialOutput).slice(-8000),
       logs: useCompileLogsStore
         .getState()

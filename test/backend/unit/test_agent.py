@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from types import SimpleNamespace
 
 import httpx
@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "backend"))
 from app.agent.runtime import AgentRuntime
 from app.agent.settings import AgentError, ConnectionSettings
 from app.agent.workspace import Workspace, project_revision
+from app.mcp.compact.catalog import Catalog
 
 
 def document():
@@ -155,9 +156,209 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_catalog_uses_existing_metadata(self):
         session = self.runtime.create("owner", document())
-        response = await self.runtime.call_tool(session, "search_catalog", {"query": "led"})
+        response = await self.runtime.call_tool(session, "search_catalog", {"query": "led", "kind": "component"})
         self.assertTrue(response["ok"])
         self.assertTrue(response["items"])
+        for item in response["items"]:
+            self.assertEqual(item["metadataId"], item["id"].removeprefix("component:"))
+
+    async def test_agent_catalog_recovers_multiword_search_and_exposes_pagination(self):
+        session = self.runtime.create("owner", document())
+        response = await self.runtime.call_tool(session, "search_catalog", {"query": "e-ink epaper 1.54", "kind": "component", "limit": 10})
+        self.assertTrue(any(item["id"] == "component:epaper-1in54-bw" for item in response["items"]))
+        self.assertEqual(response["query_original"], "e-ink epaper 1.54")
+        self.assertIn(response["query_used"], ("e-ink", "epaper", "1.54"))
+        page = await self.runtime.call_tool(session, "search_catalog", {"kind": "component", "limit": 1})
+        self.assertEqual(page["next_offset"], 1)
+        following = await self.runtime.call_tool(session, "search_catalog", {"kind": "component", "limit": 1, "offset": page["next_offset"]})
+        self.assertNotEqual(page["items"][0]["id"], following["items"][0]["id"])
+
+    async def test_panel_reference_exposes_readable_library_example(self):
+        session = self.runtime.create("owner", document())
+        reference = await self.runtime.call_tool(session, "get_reference", {"id": "component:epaper-1in54-bw"})
+        examples = reference["data"]["example_references"]
+        self.assertIn("example:epaper-1in54-uno-hello", examples)
+        code = await self.runtime.call_tool(session, "get_reference", {"id": examples[0], "section": "code"})
+        self.assertTrue(code["ok"])
+        self.assertIn("GxEPD2_BW", json.dumps(code["data"]))
+        recommended = reference["data"]["recommended_example"]
+        self.assertTrue(recommended["matches_active_board"])
+        self.assertFalse(recommended["adapt_board_pins"])
+        self.assertEqual(recommended["board_kinds"], ["arduino-uno"])
+        self.assertIn("GxEPD2", recommended["libraries"])
+
+    async def test_recommendation_ranks_matching_board_and_failed_lookup_suggests_real_ids(self):
+        snapshot = json.loads((Path(__file__).resolve().parents[3] / "backend/app/mcp/compact/catalog.snapshot.json").read_text())
+        example = next(item for item in snapshot["entries"] if item["id"] == "example:epaper-1in54-uno-hello")
+        clone = json.loads(json.dumps(example))
+        clone.update(id="example:test-epaper-esp32", key="test-epaper-esp32")
+        clone["project"]["boardType"] = "esp32"
+        snapshot["entries"].append(clone)
+        self.runtime.catalog = Catalog(snapshot)
+        value = document()
+        value["boards"][0]["boardKind"] = "esp32"
+        session = self.runtime.create("owner", value)
+        reference = await self.runtime.call_tool(session, "get_reference", {"id": "component:epaper-1in54-bw"})
+        self.assertEqual(reference["data"]["recommended_example"]["id"], clone["id"])
+        self.assertTrue(reference["data"]["recommended_example"]["matches_active_board"])
+        missing = await self.runtime.call_tool(session, "get_reference", {"id": "example:epaper-2in13-esp32-weather", "section": "code"})
+        self.assertFalse(missing["ok"])
+        self.assertTrue(missing["error"]["suggestions"])
+        for item in missing["error"]["suggestions"]:
+            self.assertTrue(self.runtime.get_catalog().get_reference(id=item["id"], section="code")["ok"])
+
+    async def test_add_component_defaults_unique_ids_positions_and_preserves_staged_sources(self):
+        session = self.runtime.create("owner", document())
+        source = session.workspace.work / "group-1/sketch.ino"
+        source.write_text("// staged source\nvoid setup() {} void loop() {}")
+        actions = []
+        async def browser(_, action, **payload):
+            actions.append(action)
+            candidate = payload["document"]
+            return {"ok": True, "document": candidate, "revision": project_revision(candidate)}
+        with patch.object(self.runtime, "browser_command", side_effect=browser):
+            first = await self.runtime.call_tool(session, "add_component", {"component": "component:led", "properties": {"color": "blue"}, "x": 0})
+            second = await self.runtime.call_tool(session, "add_component", {"component": "led"})
+            duplicate = await self.runtime.call_tool(session, "add_component", {"component": "led", "instance_id": "uno"})
+        self.assertTrue(first["ok"] and second["ok"])
+        self.assertEqual(first["component"]["id"], "led-1")
+        self.assertEqual(first["component"]["x"], 0)
+        self.assertEqual(first["component"]["properties"]["color"], "blue")
+        self.assertEqual(first["component"]["properties"]["brightness"], 1)
+        self.assertEqual(second["component"]["id"], "led-2")
+        self.assertNotEqual(first["component"]["x"], second["component"]["x"])
+        self.assertEqual(duplicate["error"]["code"], "duplicate_id")
+        self.assertEqual(len(session.workspace.document["components"]), 2)
+        self.assertIn("staged source", session.workspace.document["fileGroups"]["sketch"][0]["content"])
+        self.assertIn("staged source", source.read_text())
+        self.assertEqual(actions, ["validate_circuit", "apply"] * 2)
+
+    async def test_add_component_refusal_and_unknown_type_leave_project_unchanged(self):
+        session = self.runtime.create("owner", document())
+        before = session.workspace.revision
+        with patch.object(self.runtime, "browser_command", new=AsyncMock(return_value={"ok": False, "error": {"code": "component_unknown"}})) as browser:
+            refused = await self.runtime.call_tool(session, "add_component", {"component": "led"})
+            unknown = await self.runtime.call_tool(session, "add_component", {"component": "__missing_part__"})
+        self.assertFalse(refused["ok"] or unknown["ok"])
+        self.assertEqual(browser.await_count, 1)
+        self.assertEqual(session.workspace.revision, before)
+        self.assertEqual(session.workspace.document["components"], [])
+
+    async def test_connection_batch_is_atomic_preserves_old_wires_and_supports_single_pair(self):
+        value = document()
+        value["wires"] = [{"id": "old", "start": {"componentId": "uno", "pinName": "13"}, "end": {"componentId": "uno", "pinName": "12"}}]
+        session = self.runtime.create("owner", value)
+        pairs = [{"from": {"componentId": "uno", "pinName": "11"}, "to": {"componentId": "uno", "pinName": pin}} for pin in ["10", "9"]]
+        async def browser(_, action, **payload):
+            candidate = payload["document"]
+            return {"ok": True, "document": candidate, "revision": project_revision(candidate)}
+        with patch.object(self.runtime, "browser_command", side_effect=browser) as bridge:
+            result = await self.runtime.call_tool(session, "connect_pins", {"connections": pairs})
+            self.assertEqual(bridge.await_count, 2)
+            self.assertEqual(result["added_connections"], 2)
+            self.assertEqual(len(set(result["connection_ids"])), 2)
+            self.assertEqual(session.workspace.document["wires"][0]["id"], "old")
+            self.assertEqual(len(session.workspace.document["wires"]), 3)
+            single = await self.runtime.call_tool(session, "connect_pins", pairs[0])
+            self.assertTrue(single["ok"])
+        before = session.workspace.revision
+        async def reject(_, action, **payload):
+            self.assertEqual(action, "validate_circuit")
+            return {"ok": False, "error": {"code": "pin_invalid", "details": {"wire_id": payload["document"]["wires"][-1]["id"], "pin": "__bad__"}}}
+        pairs[1]["to"]["pinName"] = "__bad__"
+        with patch.object(self.runtime, "browser_command", side_effect=reject) as bridge:
+            failed = await self.runtime.call_tool(session, "connect_pins", {"connections": pairs})
+        self.assertEqual(bridge.await_count, 1)
+        self.assertEqual(failed["error"]["connection_index"], 1)
+        self.assertEqual(failed["error"]["connection"]["to"]["pinName"], "__bad__")
+        self.assertEqual(session.workspace.revision, before)
+        self.assertEqual(len(session.workspace.document["wires"]), 4)
+
+    async def test_mcp_accepts_single_or_batch_connections_and_rejects_mixed_formats(self):
+        from app.agent.tools import create_tools
+        session = self.runtime.create("owner", document())
+        session.task = asyncio.create_task(asyncio.sleep(30))
+        tools, manager = create_tools(self.runtime)
+        app = FastAPI()
+        app.mount("/tools", tools)
+        pair = {"from": {"componentId": "uno", "pinName": "13"}, "to": {"componentId": "uno", "pinName": "12"}}
+        headers = {"Authorization": "Bearer " + session.token, "Accept": "application/json, text/event-stream"}
+        async with manager.run():
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:1234", headers=headers) as client:
+                listing = (await client.post("/tools/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})).json()
+                self.assertIn("add_component", [tool["name"] for tool in listing["result"]["tools"]])
+                with patch.object(self.runtime, "call_tool", new=AsyncMock(return_value={"ok": True})) as call:
+                    for index, arguments in enumerate([pair, {"connections": [pair]}, {"connections": [pair], "from": pair["from"]}, {**pair, "connections": [pair]}, {"connections": []}]):
+                        response = (await client.post("/tools/mcp", json={"jsonrpc": "2.0", "id": index + 2, "method": "tools/call", "params": {"name": "connect_pins", "arguments": arguments}})).json()
+                        result = json.loads(response["result"]["content"][0]["text"])
+                        self.assertEqual(result["ok"], index < 2)
+                    self.assertEqual(call.await_count, 2)
+
+    async def test_board_swap_preserves_sources_ids_and_maps_pins_before_validation(self):
+        value = document()
+        value["wires"] = [{"id": "w", "start": {"componentId": "uno", "pinName": "13"}, "end": {"componentId": "uno", "pinName": "12"}}]
+        session = self.runtime.create("owner", value)
+        source = session.workspace.work / "group-1/sketch.ino"
+        source.write_text("// staged changes\nvoid setup() {} void loop() {}")
+        actions = []
+        async def browser(_, action, **payload):
+            actions.append(action)
+            candidate = payload["document"]
+            self.assertEqual(candidate["boards"][0]["boardKind"], "esp32")
+            self.assertEqual(candidate["boards"][0]["id"], "uno")
+            self.assertEqual(candidate["boards"][0]["activeFileGroupId"], "sketch")
+            self.assertEqual(candidate["wires"][0]["start"]["pinName"], "23")
+            return {"ok": True, "document": candidate, "revision": project_revision(candidate), "applied_revision": project_revision(candidate)}
+        with patch.object(self.runtime, "browser_command", side_effect=browser):
+            result = await self.runtime.call_tool(session, "change_board", {"board": "esp32", "pin_map": {"13": "23"}})
+        self.assertTrue(result["ok"] and result["sources_preserved"])
+        self.assertEqual(actions, ["validate_circuit", "apply"])
+        self.assertIn("staged changes", source.read_text())
+        self.assertEqual(session.workspace.groups, {"sketch": "group-1"})
+
+    async def test_board_swap_refuses_invalid_wiring_without_changing_board(self):
+        session = self.runtime.create("owner", document())
+        initial = session.workspace.revision
+        with patch.object(self.runtime, "browser_command", new=AsyncMock(return_value={"ok": False, "error": {"code": "pin_invalid"}})) as browser:
+            result = await self.runtime.call_tool(session, "change_board", {"board": "esp32"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(session.workspace.revision, initial)
+        self.assertEqual(session.workspace.document["boards"][0]["boardKind"], "arduino-uno")
+        self.assertEqual(browser.await_count, 1)
+
+    async def test_project_context_and_reference_include_live_pins_without_section_hunting(self):
+        session = self.runtime.create("owner", document())
+        session.browser_seen = time.monotonic()
+        async def browser(_, action, **payload):
+            if action == "inspect_project": return {"ok": True, "pinouts": {"uno": {"pins": ["13", "GND.1"]}}}
+            self.assertEqual(action, "describe_part")
+            return {"ok": True, "pins": [{"name": "A"}, {"name": "C"}], "defaults": {"color": "red"}, "attrs": [{"name": "color"}]}
+        with patch.object(self.runtime, "browser_command", side_effect=browser):
+            project = await self.runtime.call_tool(session, "get_project", {})
+            reference = await self.runtime.call_tool(session, "get_reference", {"id": "component:led"})
+        self.assertEqual(project["pinouts"]["uno"]["pins"], ["13", "GND.1"])
+        self.assertTrue(project["capabilities"]["change_board"])
+        self.assertEqual(reference["data"]["pins"], [{"name": "A"}, {"name": "C"}])
+        self.assertEqual(reference["data"]["defaults"]["color"], "red")
+        template = reference["data"]["instance_template"]
+        self.assertEqual(template["metadataId"], "led")
+        self.assertEqual(template["properties"], {"color": "red"})
+        # The exact reference output must be accepted as a project instance.
+        session.workspace.update_circuit([{"op": "set", "path": "/components", "value": [template]}])
+        self.assertEqual(session.workspace.document["components"][0], template)
+
+    async def test_empty_workspace_accepts_esp32_and_rolls_back_if_editor_refuses(self):
+        empty = {"format": "velxio-project", "version": 1, "boards": [], "fileGroups": {}, "components": [], "wires": [], "activeBoardId": None}
+        session = self.runtime.create("owner", empty)
+        async def browser(_, action, **payload):
+            self.assertEqual(action, "create")
+            self.assertEqual(payload["document"]["boards"][0]["boardKind"], "esp32")
+            return {"ok": False, "error": {"code": "editor_error"}}
+        with patch.object(self.runtime, "browser_command", side_effect=browser):
+            self.assertFalse((await self.runtime.call_tool(session, "create_project", {"board": "esp32"}))["ok"])
+        self.assertEqual(session.workspace.document["boards"], [])
+        self.assertEqual(session.workspace.groups, {})
+        self.assertEqual(session.workspace.capture()["boards"], [])
 
     async def test_reasoning_parts_never_enter_answer_stream_and_early_deltas_are_buffered(self):
         session = self.runtime.create("owner", document())

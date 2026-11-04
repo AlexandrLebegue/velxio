@@ -1,3 +1,8 @@
+import {
+  beginBoardExecution,
+  updateBoardExecution,
+  acknowledgeBoardEvent,
+} from './boardExecutionState';
 /**
  * RaspberryPi3Bridge
  *
@@ -159,9 +164,8 @@ export class RaspberryPi3Bridge {
   onUartTxBytes: ((bytes: Uint8Array) => void) | null = null;
   /** Guest PWM activity (PWM_START / PWM_CHANGE / PWM_STOP). Overlay boards
    * use it for built-in buzzers/speakers. */
-  onGpioPwm:
-    | ((pin: number, frequency: number, dutyCycle: number, event: string) => void)
-    | null = null;
+  onGpioPwm: ((pin: number, frequency: number, dutyCycle: number, event: string) => void) | null =
+    null;
   /** Fires once when the guest Linux has finished booting and reached an
    * interactive shell prompt. `connected` only means the WebSocket is open
    * (~1s); the guest still takes 30-60s to boot. Drives the "booting" UI and
@@ -169,6 +173,7 @@ export class RaspberryPi3Bridge {
   onBooted: (() => void) | null = null;
 
   private socket: WebSocket | null = null;
+  private executionRun = 0;
   private _connected = false;
   private _booted = false;
   /** Extra fields merged into the `start_pi` payload (an overlay uses it
@@ -222,10 +227,13 @@ export class RaspberryPi3Bridge {
     const wsUrl =
       base.replace(/^https?:/, wsProtocol) + `/simulation/ws/${encodeURIComponent(clientId)}`;
 
+    const executionRun = beginBoardExecution(this.boardId, 'booting');
+    this.executionRun = executionRun;
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
 
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       this._connected = true;
       this.onConnected?.();
       // Tell the backend which Pi family member to boot.
@@ -242,6 +250,7 @@ export class RaspberryPi3Bridge {
     };
 
     socket.onmessage = (event: MessageEvent) => {
+      if (this.socket !== socket) return;
       let msg: { type: string; data: Record<string, unknown> };
       try {
         msg = JSON.parse(event.data as string);
@@ -284,7 +293,12 @@ export class RaspberryPi3Bridge {
             // answer nothing, say why here. The line comes from the guest,
             // so it goes in as an argument, never as the format string, and
             // quoted: a newline in it cannot forge a second log entry.
-            console.warn('[%s] bus request failed: %s', this.boardId, JSON.stringify(line.slice(0, 200)), e);
+            console.warn(
+              '[%s] bus request failed: %s',
+              this.boardId,
+              JSON.stringify(line.slice(0, 200)),
+              e,
+            );
           }
           // A write the guest did not wait for (a display frame, a config
           // register) is applied and not answered: the backend holds no
@@ -295,6 +309,9 @@ export class RaspberryPi3Bridge {
           break;
         }
         case 'system':
+          // Linux is ready only after the shell and project upload, not VM boot.
+          if (msg.data.event === 'crash' || msg.data.event === 'exited')
+            acknowledgeBoardEvent(this.boardId, String(msg.data.event), msg.data, executionRun);
           if (msg.data.event === 'bus_relay') {
             this.onBusRelay?.(Number(msg.data.version) || 1);
           }
@@ -325,12 +342,28 @@ export class RaspberryPi3Bridge {
           );
           break;
         case 'error':
+          updateBoardExecution(
+            this.boardId,
+            'error',
+            {
+              code: String(msg.data.code ?? 'engine_error'),
+              message: String(msg.data.message ?? 'Engine error'),
+            },
+            executionRun,
+          );
           this.onError?.(msg.data.message as string, msg.data.code as string | undefined);
           break;
       }
     };
 
     socket.onclose = () => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_closed', message: 'The simulation connection closed unexpectedly.' },
+        executionRun,
+      );
       this._connected = false;
       this.socket = null;
       this._resetBootState();
@@ -338,11 +371,19 @@ export class RaspberryPi3Bridge {
     };
 
     socket.onerror = () => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_failed', message: 'Could not connect to the simulation backend.' },
+        executionRun,
+      );
       this.onError?.('WebSocket error');
     };
   }
 
   disconnect(): void {
+    updateBoardExecution(this.boardId, 'stopped', {}, this.executionRun);
     if (this.socket) {
       // Tell backend to stop Pi before closing
       this._send({ type: 'stop_pi' });

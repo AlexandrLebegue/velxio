@@ -8,7 +8,11 @@ import { useSimulatorStore } from '../store/useSimulatorStore';
 import { useEditorStore } from '../store/useEditorStore';
 import { useWireDiagnosticsStore } from '../store/useWireDiagnosticsStore';
 import { buildVlxPayload } from '../utils/vlxFile';
-import { prepareAgentCircuit } from '../services/agentCircuit';
+import {
+  prepareAgentCircuit,
+  inspectAgentProject,
+  describeAgentPart,
+} from '../services/agentCircuit';
 import { applyAgentSnapshot } from '../services/agentBrowserBridge';
 import { projectRevision } from '../services/agentService';
 import type { VlxPayload } from '../utils/vlxFile';
@@ -51,7 +55,7 @@ beforeEach(() => {
     return 1;
   });
   document.body.innerHTML =
-    '<agent-test-board id="uno"></agent-test-board><agent-test-led id="led"></agent-test-led>';
+    '<agent-test-board id="uno" data-board-kind="arduino-uno"></agent-test-board><agent-test-led id="led"></agent-test-led>';
   vi.spyOn(ComponentRegistry.getInstance(), 'load').mockResolvedValue();
   vi.spyOn(ComponentRegistry.getInstance(), 'getById').mockImplementation((id) =>
     id === 'led'
@@ -59,6 +63,7 @@ beforeEach(() => {
           id,
           tagName: 'agent-test-led',
           defaultValues: { mode: 'normal' },
+          properties: [{ name: 'mode', type: 'string', defaultValue: 'normal' }],
         } as unknown as ComponentMetadata)
       : undefined,
   );
@@ -100,6 +105,50 @@ function withWire(pin = '13'): VlxPayload {
 }
 
 describe('agent circuit application with the real store', () => {
+  it('returns mounted pins and a complete new-part reference in one read', async () => {
+    expect(inspectAgentProject().pinouts.uno.pins).toEqual(['13', '12', 'GND.1']);
+    expect(await describeAgentPart('component', 'led')).toMatchObject({
+      pins: [{ name: 'A' }, { name: 'C' }],
+      defaults: { mode: 'normal' },
+      attrs: [{ name: 'mode', defaultValue: 'normal' }],
+    });
+  });
+
+  it('validates the new board and waits for its replacement DOM while preserving source groups', async () => {
+    const candidate = withWire('23');
+    candidate.boards[0].boardKind = 'esp32';
+    candidate.boards[0].languageMode = 'arduino';
+    const source = candidate.fileGroups.sketch;
+    let mounted = false;
+    const off = useSimulatorStore.subscribe((state) => {
+      if (state.boards[0]?.boardKind !== 'esp32') return;
+      off();
+      setTimeout(() => {
+        document.getElementById('uno')?.remove();
+        const element = document.createElement('velxio-esp32');
+        element.id = 'uno';
+        element.setAttribute('board-kind', 'esp32');
+        element.dataset.boardKind = 'esp32';
+        document.body.appendChild(element);
+        mounted = true;
+      }, 25);
+    });
+    try {
+      await applyAgentSnapshot(candidate, await projectRevision());
+      expect(mounted).toBe(true);
+      expect(useSimulatorStore.getState().boards[0]).toMatchObject({
+        id: 'uno',
+        boardKind: 'esp32',
+        activeFileGroupId: 'sketch',
+      });
+      expect(useEditorStore.getState().fileGroups.sketch).toMatchObject(source);
+      expect(await projectRevision()).toBe(await projectRevision(candidate));
+    } finally {
+      off();
+      useSimulatorStore.getState().removeBoard('uno');
+    }
+  });
+
   it('derives finite geometry and stable revisions for minimal logical wires', async () => {
     const before = await projectRevision();
     const candidate = withWire();

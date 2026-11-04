@@ -72,6 +72,7 @@ vi.mock('../utils/vlxFile', () => ({
 }));
 
 import { projectRevision } from '../services/agentService';
+import { forgetBoardExecution } from '../simulation/boardExecutionState';
 import { handleAgentBrowserCommand, snapshotForAgent } from '../services/agentBrowserBridge';
 import {
   cancelAgentProjectRun,
@@ -80,6 +81,7 @@ import {
 } from '../services/projectExecution';
 
 beforeEach(() => {
+  forgetBoardExecution('uno');
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
     callback();

@@ -87,6 +87,12 @@ class Workspace:
                 raise AgentError("invalid_path", "Workspace symlinks are not supported")
             if target.is_file() and target not in expected:
                 target.unlink()
+        # A rejected starter can roll back to zero groups. Do not leave an
+        # empty generated group behind: capture would treat it as an unknown path.
+        group_dirs = {self.work / name for name in self.groups.values()}
+        for target in sorted(self.work.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+            if target.is_dir() and target not in group_dirs and not any(target.iterdir()):
+                target.rmdir()
 
     @staticmethod
     def safe_name(name):

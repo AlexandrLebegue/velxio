@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { beginBoardExecution, boardExecutionState, updateBoardExecution, forgetBoardExecution } from '../simulation/boardExecutionState';
 import { decideEngine, getInstantEngine } from '../lib/instantEngine';
 import {
   getBoardSeedFiles,
@@ -1369,7 +1370,7 @@ export const getBoardBridge = (id: string) => bridgeMap.get(id);
 /** Upload a QEMU-Linux board's editor file group into the guest home and run
  * its script (guestHome/autoRun overridable per overlay board). Used by the
  * boot auto-run and by Run on an already-booted board. */
-export async function piSyncAndRunScript(boardId: string, boardKind: string): Promise<void> {
+export async function piSyncAndRunScript(boardId: string, boardKind: string, executionRun?: number): Promise<void> {
   const bridge = bridgeMap.get(boardId);
   if (!bridge || !bridge.connected) return;
   const proDef = getProBoard(boardKind);
@@ -1387,6 +1388,11 @@ export async function piSyncAndRunScript(boardId: string, boardKind: string): Pr
     bridge.setQuiet(false);
   }
   const cmd = proDef?.autoRun ?? `python3 ${home}/${piMainScript(groupFiles)}`;
+  if (executionRun !== undefined) {
+    const execution = boardExecutionState(boardId);
+    if (execution?.run !== executionRun || ['stopped', 'error'].includes(execution.state)) return;
+  }
+  if (!bridge.connected) throw new Error('The guest disconnected before the project could run.');
   bridge.sendSerialText(cmd.endsWith('\n') ? cmd : cmd + '\n');
 }
 
@@ -2093,6 +2099,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
     disconnect: () => void,
   ): (message: string, code?: string) => void {
     return (message: string, code?: string) => {
+      updateBoardExecution(id, 'error', { code: code ?? 'engine_error', message });
       console.error(`[${boardKind}:${id}] ${message}`);
       serialCallback(`\r\n[Velxio] ${message}\r\n`);
       set((s) => {
@@ -2330,6 +2337,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
         // it runs before piBooted flips so the VFS upload (gated on piBooted)
         // cannot interleave with it.
         bridge.onBooted = () => {
+          const executionRun = boardExecutionState(id)?.run;
           const setup = getGuestSetup(boardKind);
           // Attach the slave models for I2C/SPI/UART components wired to
           // this Pi. This used to live in RaspberryPiWorkspace, which the
@@ -2351,13 +2359,21 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
           // every other board's compile-and-run. Overlay boards can override
           // home/command via guestHome/autoRun.
           void (async () => {
-            if (setup) {
-              await bridge.sendAndWaitForPrompt(setup.endsWith('\n') ? setup : setup + '\n');
-            }
-            flip();
             try {
-              await piSyncAndRunScript(id, boardKind);
+              if (setup) {
+                await bridge.sendAndWaitForPrompt(setup.endsWith('\n') ? setup : setup + '\n');
+              }
+              if (boardExecutionState(id)?.run !== executionRun || !bridge.connected) return;
+              flip();
+              await piSyncAndRunScript(id, boardKind, executionRun);
+              updateBoardExecution(
+                id, 'running', { evidence: 'guest_ready_and_script_dispatched' }, executionRun,
+              );
             } catch (e) {
+              updateBoardExecution(id, 'error', {
+                code: 'project_upload_failed',
+                message: e instanceof Error ? e.message : String(e),
+              }, executionRun);
               console.warn(`[${boardKind}] auto-run failed:`, e);
             }
           })();
@@ -2591,6 +2607,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
     },
 
     removeBoard: (boardId: string) => {
+      forgetBoardExecution(boardId);
       const board = get().boards.find((b) => b.id === boardId);
       getBoardSimulator(boardId)?.stop();
       simulatorMap.delete(boardId);
@@ -2846,7 +2863,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
       payload.boards.forEach((b) => {
         addBoard(b.boardKind, b.x, b.y, b.id);
         // Apply the rest of the saved fields that addBoard doesn't set.
-        const patch: Partial<BoardInstance> = {};
+        const patch: Partial<BoardInstance> = { activeFileGroupId: b.activeFileGroupId };
         if (b.languageMode && b.languageMode !== 'arduino') patch.languageMode = b.languageMode;
         if (b.name && b.name.trim()) patch.name = b.name;
         if (b.rotation) patch.rotation = normalizeRotation(b.rotation);
@@ -3366,6 +3383,8 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
       // through here. Non-paid web users get the prompt instead of a run.
       if (blockedByBoardGate(board.boardKind, 'run')) return;
 
+      const executionRun = beginBoardExecution(boardId);
+
       if (isPiBoardKind(board.boardKind)) {
         // Engine routing: most projects are a Python script driving GPIO and
         // a screen, and those run in the browser in seconds instead of
@@ -3392,7 +3411,23 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
         }));
         if (decision.engine === 'instant') {
           const instant = getInstantEngine();
-          void instant?.run(boardId).finally(() => {
+          if (!instant) {
+            updateBoardExecution(boardId, 'error', {
+              code: 'engine_unavailable', message: 'The in-browser Python engine is unavailable.',
+            }, executionRun);
+            set((s) => ({
+              boards: s.boards.map((b) => b.id === boardId ? { ...b, running: false } : b),
+              ...(s.activeBoardId === boardId ? { running: false } : {}),
+            }));
+            return;
+          }
+          void Promise.resolve().then(() => instant.run(boardId)).then(
+            () => updateBoardExecution(boardId, 'completed', { evidence: 'script_completed' }, executionRun),
+            (error: unknown) => updateBoardExecution(boardId, 'error', {
+              code: 'script_failed', message: error instanceof Error ? error.message : String(error),
+            }, executionRun),
+          ).finally(() => {
+            if (boardExecutionState(boardId)?.run !== executionRun) return;
             set((s) => {
               const boards = s.boards.map((b) => (b.id === boardId ? { ...b, running: false } : b));
               const isActive = s.activeBoardId === boardId;
@@ -3404,6 +3439,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
           if (bridge) {
             bridge.connect();
           } else {
+            updateBoardExecution(boardId, 'error', { code: 'engine_unavailable', message: 'The Linux simulation bridge is unavailable.' }, executionRun);
             // A Pi with no bridge cannot boot, and the optional-chain
             // version of this call failed in silence: no guest, no error,
             // and a toolbar still showing Stop. Say so.
@@ -3412,13 +3448,19 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
             );
             set((s) => ({
               boards: s.boards.map((b) => (b.id === boardId ? { ...b, running: false } : b)),
+              ...(s.activeBoardId === boardId ? { running: false } : {}),
             }));
+            return;
           }
         }
       } else if (isEsp32Kind(board.boardKind)) {
         // Pre-register sensors connected to this board so the QEMU worker
         // has them ready before the firmware starts executing.
         const esp32Bridge = getEsp32Bridge(boardId);
+        if (!esp32Bridge) {
+          updateBoardExecution(boardId, 'error', { code: 'engine_unavailable', message: 'The ESP32 simulation bridge is unavailable.' }, executionRun);
+          return;
+        }
         if (esp32Bridge) {
           const traceState = get();
           const { components } = traceState;
@@ -3552,6 +3594,10 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
         }
       } else if (isStm32BoardKind(board.boardKind)) {
         const stm32Bridge = getStm32Bridge(boardId);
+        if (!stm32Bridge) {
+          updateBoardExecution(boardId, 'error', { code: 'engine_unavailable', message: 'The STM32 simulation bridge is unavailable.' }, executionRun);
+          return;
+        }
         if (stm32Bridge) {
           // Pre-register I2C devices (BMP280, MPU6050, SSD1306, …) so the QEMU
           // worker builds each slave on the bus BEFORE the firmware's Wire
@@ -3584,6 +3630,10 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
         }
       } else {
         const rpSim = getBoardSimulator(boardId);
+        if (!rpSim) {
+          updateBoardExecution(boardId, 'error', { code: 'engine_unavailable', message: 'The browser simulation engine is unavailable.' }, executionRun);
+          return;
+        }
         rpSim?.start();
         // Notify an attached PIO peripheral (the pro CYW43 WiFi co-processor)
         // that the simulation started, with the board's source files so it can
@@ -3620,6 +3670,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => {
     stopBoard: (boardId: string) => {
       const board = get().boards.find((b) => b.id === boardId);
       if (!board) return;
+      beginBoardExecution(boardId, 'stopped');
 
       // Hard reset FIRST, before the engine is told to stop: clear cached pin
       // states AND notify listeners so multiplexed displays (7-segment, LED
