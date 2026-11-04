@@ -138,6 +138,17 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(checked['issue_count'], len(checked['issues']))
         self.assertIn('attribute_default_type_unknown', checked['informational_codes'])
 
+    async def test_blink_rate_is_reported_from_the_shared_generated_source(self):
+        saved = await self.runtime.call_tool(self.session, 'save_project', {'from_example':'example:blink-led',
+                                            'parameters':{'board':'arduino-nano','frequency_hz':'1'}})
+        self.assertTrue(saved['ok'], saved)
+        self.assertEqual(saved['generated_behavior']['frequency_hz'], 1)
+        source = (self.session.workspace.work / saved['workspace']['active_file']).read_text()
+        self.assertEqual(source.count('delay(500);'), 2)
+        phased = await self.runtime.call_tool(self.session, 'save_project', {'from_example':'example:blink-led',
+                                              'parameters':{'delay_ms':1000}})
+        self.assertEqual(phased['generated_behavior']['frequency_hz'], 0.5)
+
     async def test_a_finished_old_build_is_never_relabelled_as_the_current_source(self):
         await self.runtime.call_tool(self.session, 'save_project', {'from_example': 'example:blink-led'})
         service = self.session.project_service
@@ -158,6 +169,21 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status['workspace_revision'], started['workspace_revision'])
             self.assertFalse(status['matches_current_workspace'])
             self.assertNotEqual(self.session.workspace.revision, started['workspace_revision'])
+
+    async def test_existing_workspace_with_a_local_header_survives_check_and_file_edits(self):
+        from app.mcp.compact.examples import instantiate
+        doc, _ = instantiate(self.runtime.get_catalog(), 'example:blink-led', {'board':'arduino-nano'})
+        group = doc['boards'][0]['activeFileGroupId']
+        doc['fileGroups'][group][0]['content'] = '#include "user_note.h"\n' + doc['fileGroups'][group][0]['content']
+        header = '#pragma once\ninline int userValue() { return 7; }\n'
+        doc['fileGroups'][group].append({'name':'user_note.h','content':header})
+        other = self.runtime.create('header-owner', doc)
+        path = other.workspace.work / self.runtime.source_context(other)['active_file']
+        path.write_text(path.read_text().replace('delay(1000)', 'delay(250)'))
+        checked = await self.runtime.call_tool(other, 'check_project', {})
+        self.assertEqual(checked['structure_status'], 'valid', checked)
+        self.assertEqual((path.parent/'user_note.h').read_text(), header)
+        self.assertIn('delay(250)', other.workspace.document['fileGroups'][group][0]['content'])
 
     async def test_a_failed_build_is_an_error_step_even_with_a_successful_rpc(self):
         result = {'ok': True, 'state': 'error', 'success': False, 'first_error': {'file': 'sketch.ino', 'line': 4, 'message': 'controlled compile failure', 'suggestion': 'Fix line 4'}}

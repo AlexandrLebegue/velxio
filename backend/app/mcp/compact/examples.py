@@ -11,7 +11,10 @@ SERVO = 'example:uno-servo'
 EPAPER = 'example:epaper-1in54-uno-hello'
 RECIPES = {
     BLINK: {'board': {'type': 'string', 'enum': ['arduino-uno','arduino-nano'], 'default': 'arduino-uno'},
-            'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000},
+            'frequency_hz': {'type':'number','minimum':0.01,'maximum':500,
+                             'description':'Full blink cycles per second (on AND off). Prefer this for a requested blink rate. Rounded to whole milliseconds per phase; do not also set delay_ms.'},
+            'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000,
+                         'description':'Duration of EACH on/off phase, not the full cycle. A cycle takes 2*delay_ms; alternative to frequency_hz.'},
             'external_led': {'type': 'boolean', 'default': False},
             'resistance_ohms': {'type':'integer','minimum':10,'maximum':1000000,'default':1000},
             'led_color': {'type':'string','enum':['red','green','blue','yellow','white'],'default':'red'},
@@ -115,6 +118,10 @@ def instantiate(catalog, reference_id, parameters):
     doc['wires'] = copy.deepcopy(project['wires'])
     pins = values.get('pins', {})
     if reference_id == BLINK:
+        if 'frequency_hz' in parameters:
+            if 'delay_ms' in parameters:
+                raise CatalogError('invalid_argument','Choose frequency_hz OR per-phase delay_ms, not both')
+            values['delay_ms'] = max(1, int(math.floor(500 / values['frequency_hz'] + 0.5)))
         pin = pins.get('LED', 13)
         if pin != 13 and not values['external_led']:
             raise CatalogError('invalid_argument', 'The built-in LED is fixed at 13; set external_led=true to remap it')
@@ -185,6 +192,7 @@ def instantiate(catalog, reference_id, parameters):
             text_literal = json.dumps(values['text'],ensure_ascii=False)
             center = '    int16_t tx, ty; uint16_t tw, th;\n    display.getTextBounds(' + text_literal + ', 0, 0, &tx, &ty, &tw, &th);\n    display.setCursor((display.width() - tw) / 2 - tx, (display.height() - th) / 2 - ty);'
             source = source[:cursor.start()]+center+source[cursor.end():]
+            source = _replace(source, '    display.setCursor(20, 100);\n    display.print(F("ePaper"));\n    display.setCursor(20, 140);\n    display.print(F("OK!"));\n', '')
         if values['frame']:
             source = _replace(source, '    display.fillScreen(GxEPD_WHITE);', '    display.fillScreen(GxEPD_WHITE);\n    display.drawRect(0, 0, 200, 200, GxEPD_BLACK);')
         for wire in doc['wires']:
@@ -204,5 +212,10 @@ def instantiate(catalog, reference_id, parameters):
                 endpoint['componentId'] = 'board'
     doc['fileGroups'][board['activeFileGroupId']] = [{'name': 'sketch.ino', 'content': source}]
     doc['name'] = entry['name']
-    return doc, {'example_id': reference_id, 'catalog_revision': catalog.revision, 'source_sha256': original_hash,
-                 'recipe_version': 1, 'parameters': {**values, 'pins': pins}}
+    provenance = {'example_id': reference_id, 'catalog_revision': catalog.revision, 'source_sha256': original_hash,
+                  'recipe_version': 2, 'parameters': {**values, 'pins': pins}}
+    if reference_id == BLINK:
+        delay = values['delay_ms']
+        provenance['generated_behavior'] = {'on_ms':delay, 'off_ms':delay, 'cycle_ms':2*delay,
+                                            'frequency_hz':500/delay, 'basis':'generated source; no runtime observation'}
+    return doc, provenance

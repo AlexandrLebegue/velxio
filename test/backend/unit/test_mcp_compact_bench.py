@@ -35,9 +35,9 @@ class BenchIntegrityTests(unittest.TestCase):
             self.assertFalse(bench.epaper_source_facts(doc, changed)['source_wire_candidate'])
             changed = source.replace('void setup() {', 'void setup() {\nSPI.begin(19, -1, 23, 5);')
             self.assertFalse(bench.epaper_source_facts(doc, changed)['source_wire_candidate'])
-            # The catalog demo also prints labels: the remote audit must expose
-            # them rather than certifying an exact-text screen from compilation.
-            self.assertEqual(facts['additional_display_literals'], ['ePaper', 'OK!'])
+            self.assertEqual(facts['additional_display_literals'], [])
+            legacy = source.replace('display.hibernate();', 'display.print(F("extra label"));\n  display.hibernate();')
+            self.assertEqual(bench.epaper_source_facts(doc, legacy)['additional_display_literals'], ['extra label'])
 
     def test_remote_audit_selects_declared_project_and_latest_version(self):
         first, probe = 'p_' + 'a' * 32, 'p_' + 'b' * 32

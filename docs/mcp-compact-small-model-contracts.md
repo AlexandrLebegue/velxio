@@ -418,3 +418,21 @@ AVR builds require an explicit owner opt-in and a real installed-cache inventory
 The compile runs inside the genuine REST admission lane, using closed verified
 library sources; no core/library installation occurs during compilation. Existing
 ESP32 IDF admission and verification are retained, with no AVR fallback for ESP32.
+
+## Explicit blink units and centered display fidelity
+
+Blink from_example accepts frequency_hz for a full on/off cycle rate. Existing
+delay_ms remains the duration of each individual phase, so a full cycle lasts
+twice that duration. Supplying both options is rejected. Frequency is converted
+to the nearest whole-millisecond phase; example_provenance.generated_behavior
+reports on_ms, off_ms, cycle_ms and the nominal generated frequency. This is
+source-derived metadata, never a claim of measured LED timing.
+
+The same metadata and parameter schema are used by the integrated chat. A
+compile-successful but wrong-rate model answer was caught by independent source
+review; concise parameter names alone were insufficient to establish fidelity.
+
+For align=center, e-paper recipes remove the catalog demonstration's additional
+ePaper/OK! strings, leaving only the requested centered text (and optional frame).
+Default mode, Uno/ESP32 native pins and the offline ESP32 path are retained.
+Unit tests verify generated source and wiring; no rendered display is certified.

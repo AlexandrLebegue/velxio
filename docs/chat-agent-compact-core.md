@@ -41,6 +41,14 @@ The external compact search schema remains unchanged. Save returns a bounded
 summary of the applied components; checks retain all returned errors/warnings,
 summarize informational codes and link the complete report artifact.
 
+Blink starters expose frequency_hz for full on/off cycles per second. The
+compatible delay_ms option is explicitly per phase; the options cannot be mixed.
+Save reports the generated on/off times, full period and nominal frequency so
+an incorrect interpretation is visible before compilation. Whole-millisecond
+rounding is explicit and the timing metadata is not a runtime observation.
+Centered e-paper recipes print only the requested text; legacy demo labels are
+removed in that mode, preserving default mode and native board/SPI pins.
+
 ## Build truth and editor truth
 
 Chat compilation uses the genuine sealed REST owner, with the original chat

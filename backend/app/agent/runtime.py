@@ -264,10 +264,12 @@ class AgentRuntime:
                     "Available starter_examples and their exact parameters are supplied below. For a complete new circuit, use a suitable one directly with save_project(from_example=...,parameters=...). No catalog search or reference read is needed for those advertised parameters. "
                     "For a missing capability, search_catalog(kind=example,query=<short keyword>) or inspect a specific new component. Always send query explicitly when searching. "
                     "Supported examples generate consistent code, native wires and libraries. Use advertised scalar parameters; do not rewrite or re-read generated code unless a specific detail is missing. "
+                    "When generated_behavior is returned, compare its values with the user's request and correct any mismatch before building. It describes generated code, not runtime observations. "
                     "Existing user code/circuit must be preserved when making a local change: use file edit tools, add_component, connect_pins, set_component_properties or change_board. "
                     "A component addition returns its real pins and defaults; connect all planned native wires in one connect_pins(connections=[...]) call. Read a new component's reference only once when needed. "
                     "After editing, check_project() then build_project(). These automatically capture current files and select the project/version. Omit project_id, version and expected_version. save_project() also captures current file edits. "
                     "Only state=done AND success=true proves compilation. Follow next_action if running; fix reported errors without repeating unchanged failed calls. "
+                    "matches_current_workspace=false means the build belongs to older source; never report it as a build of current files. "
                     "When execution is requested, run_project on a supported board then observe_project. Starting/booting with confirmed=false is pending: observe without restarting. "
                     "ESP32 simulation is unsupported: use build_project for compilation only, never call or poll ESP32 run_project. "
                     "Report saved/applied, compilation, simulation startup and observed behavior separately. Compilation does not prove blinking, movement or display output. "
@@ -410,7 +412,7 @@ class AgentRuntime:
                 async with session.tool_lock:
                     result = await self._call_tool(session, name, args)
             result = normalize_error(result, name, args)
-            summary = {key: result[key] for key in ("state", "success", "first_error", "diagnostic_summary", "structure_status", "matches_current_workspace", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
+            summary = {key: result[key] for key in ("state", "success", "first_error", "diagnostic_summary", "structure_status", "generated_behavior", "matches_current_workspace", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
             failed = (result.get('ok') is False or result.get('success') is False or
                       result.get('state') in ('error', 'interrupted') or result.get('structure_status') == 'invalid')
             self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if failed else "completed", "result_state": result.get("state"), "confirmed": result.get("confirmed"), "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})

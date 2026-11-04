@@ -55,6 +55,29 @@ class ExampleAuthoringTests(unittest.TestCase):
         self.assertIn('myServo.write(45);', source)
         self.assertEqual(next(w for w in doc['wires'] if w['end']['pinName'] == 'PWM')['start']['pinName'], '10')
 
+    def test_blink_frequency_means_a_full_cycle_and_reports_nominal_generated_timing(self):
+        for board, frequency, delay in [('arduino-uno',1,500),('arduino-nano',2,250),('arduino-uno',0.5,1000)]:
+            doc, source = self.saved(BLINK, {'board':board,'frequency_hz':frequency,'external_led':True})
+            self.assertEqual(source.count(f'delay({delay});'), 2)
+            saved = self.store.save_project(from_example=BLINK,parameters={'frequency_hz':frequency})
+            behavior = saved['example_provenance']['generated_behavior']
+            self.assertEqual(behavior['cycle_ms'], 2*delay)
+            self.assertEqual(behavior['frequency_hz'], frequency)
+            self.assertIn('no runtime observation', behavior['basis'])
+        for params in ({'frequency_hz':1,'delay_ms':1000},{'frequency_hz':0},{'frequency_hz':True},{'frequency_hz':float('nan')}):
+            self.assertFalse(self.store.save_project(from_example=BLINK,parameters=params)['ok'])
+
+    def test_centered_epaper_has_only_the_requested_text_and_preserves_native_pins(self):
+        for board in ('arduino-uno','esp32'):
+            doc, source = self.saved(EPAPER, {'board':board,'text':'Hello World','align':'center'})
+            self.assertIn('display.getTextBounds("Hello World"', source)
+            self.assertIn('display.print(F("Hello World"))', source)
+            self.assertNotIn('display.print(F("ePaper"))', source)
+            self.assertNotIn('display.print(F("OK!"))', source)
+            if board=='esp32':
+                self.assertEqual({w['end']['pinName']:w['start']['pinName'] for w in doc['wires']},
+                                 {'CS':'5','DC':'17','RST':'16','BUSY':'4','SCK':'18','SDI':'23','VCC':'3V3','GND':'GND'})
+
     def test_epaper_uno_and_esp32_keep_spi_and_control_pins_coherent(self):
         for board, spi in [('arduino-uno', {'SDI': '11', 'SCK': '13'}), ('esp32', {'SDI': '23', 'SCK': '18'})]:
             text = 'Hi "V" \\'

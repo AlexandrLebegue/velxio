@@ -27,6 +27,23 @@ spec = importlib.util.spec_from_file_location('chat_bench_core', ROOT / 'scripts
 bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
 ab = bench.ab
+VALIDATIONS = {
+    'V1': 'Sur cette Arduino Nano, conserve le câblage et mon fichier user_note.h, ainsi que son appel dans setup. Change seulement le clignotement pour avoir deux flashes par seconde, avec des durées allumée et éteinte égales. Compile le projet et rapporte le résultat réel.',
+    'V2': 'Crée un montage Arduino Uno où un potentiomètre à glissière commande un servomoteur de 0 à 180 degrés sur toute sa course. Enregistre le montage câblé, compile-le et dis-moi ce qui a réellement réussi.',
+}
+
+
+def initial_document(case, catalog):
+    if case == 'V1':
+        from app.mcp.compact.examples import instantiate
+        document, _ = instantiate(catalog, 'example:blink-led', {'board':'arduino-nano','external_led':True,
+                                  'resistance_ohms':330,'led_color':'green','delay_ms':1000})
+        board = document['boards'][0]
+        files = document['fileGroups'][board['activeFileGroupId']]
+        files[0]['content'] = '#include "user_note.h"\n' + files[0]['content'].replace('void setup() {','void setup() {\n  Serial.begin(9600);\n  userNote();',1)
+        files.append({'name':'user_note.h','content':'#pragma once\n#include <Arduino.h>\ninline void userNote() { Serial.println("KEEP_USER_HOOK"); }\n'})
+        return document
+    return {'format':'velxio-project','version':1,'boards':[],'components':[],'wires':[],'fileGroups':{},'activeBoardId':None}
 
 
 class EditorAdapter:
@@ -207,13 +224,14 @@ async def main(args):
             for case in args.cases.split(','):
                 if (root / 'STOP').exists():break
                 directory = root / case;directory.mkdir();active['directory'] = directory
-                document = {'format': 'velxio-project', 'version': 1, 'boards': [], 'components': [], 'wires': [], 'fileGroups': {}, 'activeBoardId': None}
+                document = initial_document(case, runtime.get_catalog())
+                initial = copy.deepcopy(document)
                 response = await client.post('/api/agent/sessions', json={'document': document});response.raise_for_status();sid = response.json()['id']
                 editor = EditorAdapter(runtime.get_catalog(), document);ready = asyncio.Event()
                 stream = asyncio.create_task(editor_stream(client, sid, 'backend-bench-editor', editor, directory, ready))
                 try:
                     await asyncio.wait_for(ready.wait(), 10)
-                    prompt = bench.PROMPTS[case]
+                    prompt = VALIDATIONS[case] if case in VALIDATIONS else bench.PROMPTS[case]
                     print('START', case, flush=True);started = time.monotonic()
                     response = await client.post(f'/api/agent/sessions/{sid}/messages', json={'message': prompt, 'request_id': 'single-prompt'});response.raise_for_status()
                     session = next(s for s in runtime.sessions.values() if s.id == sid)
@@ -269,6 +287,10 @@ async def main(args):
                     row['harness_tool_errors'] = sum(p.get('type')=='tool' and p.get('state',{}).get('status')=='error' for p in parts)
                     row['generation_limits'] = sum(m.get('info',{}).get('finish')=='length' for m in messages) if adapter else 0
                     row['file_tool_calls'] = sum(p.get('type')=='tool' and not p.get('tool','').startswith('velxio_') for p in parts)
+                    if case == 'V1':
+                        original = next(f['content'] for files in initial['fileGroups'].values() for f in files if f['name']=='user_note.h')
+                        preserved = any(f['name']=='user_note.h' and f['content']==original for files in document['fileGroups'].values() for f in files)
+                        row['user_helper_preserved'] = preserved and 'userNote();' in source
                     ab.write_json(directory/'result.json',row);rows.append(row);ab.write_json(root/'summary.json',rows)
                     print('DONE',case,ab.canonical({k:row[k] for k in ('calls','errors','loops','seconds','compile_ok','editor_matches','final_build_read','proof')}),flush=True)
                     if not proof.get('single_exact_prompt') and not proof.get('models'):

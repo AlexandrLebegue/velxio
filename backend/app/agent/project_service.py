@@ -108,6 +108,9 @@ class ChatProjectService:
                             'component_count':len(document['components']), 'connection_count':len(document['wires']),
                             'libraries':board.get('libraries', [])[:16], 'summary_only':True},
                 'warnings': saved.get('warnings', []), 'workspace': self.runtime.source_context(self.session)}
+        behavior = saved.get('example_provenance', {}).get('generated_behavior')
+        if behavior and candidate['fileGroups'] == document['fileGroups']:
+            result['generated_behavior'] = behavior
         while len(json.dumps(result, ensure_ascii=False).encode()) > 20 * 1024 and parts:
             parts.pop()
         result['project']['components_truncated'] = len(parts) != len(document['components'])
@@ -152,9 +155,12 @@ class ChatProjectService:
             if result.get('ok') and args['action'] == 'start':
                 self.build_revisions[result['build_id']] = saved['revision']
             built_revision = self.build_revisions.get(result.get('build_id'))
+            matches = built_revision == project_revision(self.session.workspace.capture())
+            if result.get('ok') and result.get('state') in ('done','error','interrupted') and not matches:
+                result['next_action'] = 'Current files differ from this build. Call build_project(action=start) for current files; do not claim this old build covers them.'
             return {**{k: v for k, v in result.items() if k not in ('project_id', 'version')},
                     'workspace_revision': built_revision,
-                    'matches_current_workspace': built_revision == project_revision(self.session.workspace.capture()),
+                    'matches_current_workspace': matches,
                     'simulation_confirmed': False}
         raise AgentError('unknown_tool', 'Unknown conversation project operation')
 

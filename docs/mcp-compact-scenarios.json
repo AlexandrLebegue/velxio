@@ -15,7 +15,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 9332,
+      "max_catalog_response_bytes": 5872,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -83,7 +83,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 7,
-      "max_catalog_response_bytes": 8740,
+      "max_catalog_response_bytes": 5281,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
@@ -150,7 +150,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2194,
+      "max_catalog_response_bytes": 2544,
       "unexpected_errors": 0,
       "expected_errors": 1,
       "repeated_identical_calls": 0,
@@ -220,7 +220,7 @@
         "read_artifact": 1
       },
       "reference_pages_followed": 0,
-      "max_catalog_response_bytes": 2194,
+      "max_catalog_response_bytes": 2544,
       "unexpected_errors": 0,
       "expected_errors": 0,
       "repeated_identical_calls": 0,
