@@ -16,7 +16,10 @@ class DeterministicScenarioTests(unittest.IsolatedAsyncioTestCase):
         expected = json.loads((ROOT / 'docs/mcp-compact-scenarios.json').read_text())
         self.assertEqual(result, expected)
         self.assertFalse(result['real_llm_used'] or result['real_compiler_used'])
+        self.assertEqual([case['tool_calls'] for case in result['baseline']], [8, 7, 8])
         for case in result['scenarios']:
+            self.assertEqual(case['tool_calls'], 5)
+            self.assertEqual(case['calls_by_tool'].get('get_reference', 0), 0)
             self.assertEqual(case['unexpected_errors'], 0)
             self.assertEqual(case['repeated_identical_calls'], 0)
             self.assertEqual(case['controlled_build_callbacks'], 1)

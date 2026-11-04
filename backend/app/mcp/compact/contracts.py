@@ -89,6 +89,8 @@ save = obj({"document": document, "changes": {"type": "array", "minItems": 1, "m
             "board": {**identifier, "description": "Sketch creation only; defaults to arduino-uno."},
             "board_id": {**identifier, "description": "Optional existing board selected for a sketch update; defaults to the active board."},
             "libraries": {"type": "array", "maxItems": 128, "items": identifier},
+            "from_example": {**string(240), "description": "Create a new project from a catalog example advertising from_example.supported=true. No source rewriting by the model."},
+            "parameters": {"type": "object", "description": "Only the short parameters advertised by this example: board, text, pins, delay_ms, angle or other explicitly listed fields."},
             "project_id": identifier, "expected_version": version})
 # Keep action/CAS alternatives below the object root for MCP client schemas.
 save["if"] = {"required": ["changes"]}
@@ -104,6 +106,10 @@ save['then'] = {'not': {'anyOf': [{'required': ['document']}, {'required': ['cha
                 'if': {'anyOf': [{'required': ['project_id']}, {'required': ['expected_version']}]},
                 'then': {'required': ['project_id', 'expected_version']}}
 save['else'] = legacy_save_alternatives
+text_save_alternatives = {key: save.pop(key) for key in ('if', 'then', 'else')}
+save['if'] = {'required': ['from_example']}
+save['then'] = {'not': {'anyOf': [{'required': [key]} for key in ('document', 'changes', 'sketch', 'project_id', 'expected_version', 'board', 'board_id', 'libraries')]}}
+save['else'] = text_save_alternatives
 # Per-action required/forbidden fields are enforced by BuildService.build_project.
 build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
              "board_id": identifier, "build_id": identifier,
@@ -140,7 +146,8 @@ readable_error = obj({"file": {"type": ["string", "null"], "maxLength": 240},
 _RESULTS = {
     "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 50, "items": obj({
         "id": identifier, "kind": enum("component", "board", "example"), "name": string(500),
-        "summary": {"type": "string", "maxLength": 300}, "metadataId": identifier, "boardKind": identifier}, ["id", "kind", "name", "summary"])},
+        "summary": {"type": "string", "maxLength": 300}, "metadataId": identifier, "boardKind": identifier,
+        "from_example": {"type": "object"}}, ["id", "kind", "name", "summary"])},
         "query_original": {"type": "string", "maxLength": 256},
         "query_used": {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 128},
         "total": {"type": "integer", "minimum": 0}, "has_more": {"type": "boolean"},
@@ -148,10 +155,13 @@ _RESULTS = {
         ["revision", "items", "query_original", "query_used", "total", "has_more", "next_offset"]),
     "get_reference": obj({"id": identifier, "revision": version, "section": _INPUTS["get_reference"]["properties"]["section"],
                           "data": {}, "instance_template": {"type": "object"},
+                          "from_example": {"type": "object"},
                           "example_references": {"type": "array", "items": identifier, "maxItems": 8},
+                          "example_options": {"type": "array", "maxItems": 8, "items": {"type": "object"}},
                           "execution": obj({"supported": {"const": False}, "state": {"const": "unsupported"}, "message": string(500)}, ["supported", "state", "message"])}, ["id", "revision", "section", "data"]),
     "save_project": obj({"project_id": identifier, "version": version, "content_sha256": version,
         "board_id": identifier, "sketch_file": string(240),
+        "example_provenance": {"type": "object"},
         "warnings": {"type": "array", "maxItems": 2, "items": obj({"file": string(240), "observed": string(240), "correction": string(500)}, ["file", "observed", "correction"])},
         "project_artifact_id": identifier, "summary": string(500),
         # A future downloadable artifact, not a promised existing HTTP route.

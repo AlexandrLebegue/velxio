@@ -113,13 +113,14 @@ orchestrator with the existing controlled owner adapter pattern.
 
 | Scenario | Tool calls | Unexpected tool errors | Repeated identical calls | Status polls |
 | --- | ---: | ---: | ---: | ---: |
-| LED / Uno | 8 | 0 | 0 | 0 |
-| Servo 45 degrees / Nano | 7 | 0 | 0 | 0 |
-| E-ink / ESP32 | 8 | 0 | 0 | 0 |
+| LED / Uno | 5 | 0 | 0 | 0 |
+| Servo 45 degrees / Nano | 5 | 0 | 0 | 0 |
+| E-ink / ESP32 | 5 | 0 | 0 | 0 |
 
-Each scenario searches once, reads native templates, saves once, checks once,
-starts one **test-only** build, receives its terminal result in the same call and
-retrieves one controlled firmware artifact. E-ink also reads the real linked library example.
+Each optimized scenario searches for an example once, saves from that example,
+checks once, starts one **test-only** build, receives its terminal result in the
+same call and retrieves one controlled firmware artifact. The explicit-authoring
+baseline still reads native templates and the linked GxEPD2 example separately.
 The controlled owner completes within the bounded start wait; these counts
 do not predict real compiler polling or LLM latency. Pin coverage can remain
 partial, and no electrical behavior is certified. Test-only AVR callbacks do
@@ -143,7 +144,7 @@ Validation recorded for this change:
 
 ```text
 test_agent.py:             Ran 31 tests — OK
-test_mcp_compact*.py:      Ran 146 tests — OK
+test_mcp_compact*.py:      Ran 156 tests — OK
 ```
 
 ## Bounded start results and explicit success
@@ -209,7 +210,7 @@ states that explicitly with a null location instead of inventing one. A compiler
 callback that claims success while emitting an error is rejected and publishes
 no firmware artifact.
 
-## Before/after deterministic counts
+## Earlier bounded-wait milestone counts
 
 | Scenario | Calls before | Calls now | Unexpected errors before/now | Repeated calls before/now |
 | --- | ---: | ---: | --- | --- |
@@ -221,3 +222,73 @@ Each fast controlled build saves exactly one status call. The scenario client
 still supports a follow-up status request when `start` is non-terminal. These
 are deterministic contract measurements, not a claim about real model latency
 or real compilation. No real Qwen endpoint is used.
+
+## Create from a catalog example without rewriting code
+
+`save_project(from_example=example_id, parameters={...})` creates a new native
+project. It is mutually exclusive with `document`, `changes`, `sketch`, and
+existing project IDs. The server supplies source, board, components, libraries
+and wiring. No source string or JSON document is required from the model.
+
+The initial reviewed recipes are:
+
+| Catalog ID | Accepted short parameters |
+| --- | --- |
+| `example:blink-led` | `board` (Uno), `delay_ms`, `pins.LED`, `external_led` |
+| `example:uno-servo` | `board` (Uno/Nano), `pins.PWM`, `angle`, `delay_ms` |
+| `example:epaper-1in54-uno-hello` | `board` (Uno/ESP32), `text`, `pins.CS/DC/RST/BUSY`, `frame` |
+
+```json
+{
+  "from_example": "example:uno-servo",
+  "parameters": {"board": "arduino-nano", "angle": 45, "pins": {"PWM": 9}, "delay_ms": 1000}
+}
+```
+
+Search results and example references expose `from_example.supported` and the
+full per-example JSON Schema under `from_example.parameters`. Query-matching
+reviewed examples are prioritized in example searches. The existing
+`example_references` ID list remains compatible; the companion `example_options`
+lists those IDs with their supported parameter schemas. Unsupported recipes
+advertise `supported=false` and fail explicitly instead of guessing a conversion.
+
+Delays are integer milliseconds from 1 through 60000. Servo `angle` is 0 through
+180; specifying it selects fixed-angle mode. Otherwise the original sweep is
+preserved, and `delay_ms` requires an angle. The blink example uses its built-in
+LED by default. `external_led=true` adds a native LED and series resistor and
+allows the selected GPIO to be changed. Parameterized code and wiring use the
+same pin values. E-paper control pins must be distinct, outside fixed SPI,
+serial and reserved pins; board-specific defaults are advertised. User display
+text is limited to 16 printable characters and is escaped safely as a C++ string.
+Font coverage and actual rendering are not certified.
+
+The server applies reviewed transformations to catalog source. Missing source
+anchors are rejected; arbitrary parameter names and code injection parameters
+are never accepted. `example_provenance` records the example ID, catalog revision,
+original source hash, recipe version and resolved parameters. The native project
+version remains the hash of the resulting snapshot. These recipes do not claim
+that dependencies are installed or that a real compiler/simulator has run.
+
+Tests cover native creation/checking for LED/Uno, fixed servo/Nano, e-paper/Uno,
+and the e-paper/ESP32 variant; multiline source, quotes/backslashes in display
+text, pin/code consistency, unknown parameters, reserved/colliding pins and
+catalog-source changes. Structural checks remain honest `partial` reports when
+electrical or other evidence is unavailable, with no structural errors.
+
+### Native recipe call counts
+
+The scenario script now reruns both the explicit-authoring baseline and the
+recipe path. All three retain the same target board; the LED comparison uses
+the external LED/resistor variant in both paths.
+
+| Scenario | Explicit authoring | `from_example` | Unexpected errors before/after | Repeated calls before/after |
+| --- | ---: | ---: | --- | --- |
+| LED / Uno | 8 | 5 | 0 / 0 | 0 / 0 |
+| Servo / Nano | 7 | 5 | 0 / 0 | 0 / 0 |
+| E-ink / ESP32 | 8 | 5 | 0 / 0 | 0 / 0 |
+
+The five calls are search, save from example, check, build and read the controlled
+firmware artifact. Search already supplies the accepted parameters, so a second
+reference read is unnecessary. The checked-in JSON includes both `baseline` and
+`scenarios`. These remain controlled contract tests with no real model,
+compiler, deployment or network dependency installation.

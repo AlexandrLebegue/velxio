@@ -66,7 +66,7 @@ class DeterministicClient:
         return result
 
 
-async def run_scenario(catalog, scenario):
+async def run_scenario(catalog, scenario, from_example=False):
     name, board_kind, parts, dependencies, code = scenario
     with tempfile.TemporaryDirectory(prefix='compact-contract-') as temporary:
         root = Path(temporary)
@@ -99,38 +99,52 @@ async def run_scenario(catalog, scenario):
                               test_only=True, name='deterministic-scenarios-v1'), toolchains=toolchains)
         client = DeterministicClient(catalog, store, checker, builds)
         try:
-            search = await client.call('search_catalog', query='e-ink epaper 1.54' if name == 'eink-esp32' else parts[0], kind='component')
-            assert 'component:' + parts[0] in [item['id'] for item in search['items']]
-            board_reference = await client.call('get_reference', id='board:' + board_kind, section='project')
-            assert board_reference['execution']['state'] == 'unsupported'
-            document = board_reference['data']
-            board = document['boards'][0]
-            board['libraries'] = list(dependencies)
-            for part in parts:
-                reference = await client.call('get_reference', id='component:' + part, section='project')
-                template = reference['data']['instance_template']
-                assert template['metadataId'] == part
-                document['components'].append(template)
-                if name == 'eink-esp32':
-                    example = reference['data']['example_references'][0]
-                    source = await client.call('get_reference', id=example, section='code')
-                    assert 'GxEPD2' in source['data']['files'][0]['content']
-            group = board['activeFileGroupId']
-            document['fileGroups'][group] = [{'name': 'sketch.ino', 'content': code}]
-            def wire(index, left, pin, right, other_pin):
-                return {'id': 'w' + str(index), 'start': {'componentId': left, 'pinName': pin},
-                        'end': {'componentId': right, 'pinName': other_pin}}
-            if name == 'led-uno':
-                led, resistor = [item['id'] for item in document['components']]
-                document['wires'] = [wire(1, board['id'], '13', resistor, '1'), wire(2, resistor, '2', led, 'A'), wire(3, led, 'C', board['id'], 'GND.1')]
-            elif name == 'servo-nano':
-                servo = document['components'][0]['id']
-                document['wires'] = [wire(i, board['id'], pin, servo, target) for i, (pin, target) in enumerate([('9', 'PWM'), ('5V', 'V+'), ('GND.1', 'GND')])]
+            if from_example:
+                query = 'blink' if name == 'led-uno' else 'servo' if name == 'servo-nano' else 'epaper'
+                search = await client.call('search_catalog', query=query, kind='example')
+                example = next(item for item in search['items'] if item.get('from_example', {}).get('supported'))
+                parameters = {'board': board_kind}
+                if name == 'led-uno':
+                    parameters.update(external_led=True, delay_ms=500)
+                elif name == 'servo-nano':
+                    parameters.update(angle=45, delay_ms=1000)
+                else:
+                    parameters.update(text='Hello Velxio', frame=True)
+                saved = await client.call('save_project', from_example=example['id'], parameters=parameters)
+                board = {'id': saved['board_id']}
             else:
-                epd = document['components'][0]['id']
-                document['wires'] = [wire(i, board['id'], pin, epd, target) for i, (pin, target) in enumerate([
-                    ('18', 'SCK'), ('23', 'SDI'), ('5', 'CS'), ('17', 'DC'), ('16', 'RST'), ('4', 'BUSY'), ('3V3', 'VCC'), ('GND', 'GND')])]
-            saved = await client.call('save_project', document=document)
+                search = await client.call('search_catalog', query='e-ink epaper 1.54' if name == 'eink-esp32' else parts[0], kind='component')
+                assert 'component:' + parts[0] in [item['id'] for item in search['items']]
+                board_reference = await client.call('get_reference', id='board:' + board_kind, section='project')
+                assert board_reference['execution']['state'] == 'unsupported'
+                document = board_reference['data']
+                board = document['boards'][0]
+                board['libraries'] = list(dependencies)
+                for part in parts:
+                    reference = await client.call('get_reference', id='component:' + part, section='project')
+                    template = reference['data']['instance_template']
+                    assert template['metadataId'] == part
+                    document['components'].append(template)
+                    if name == 'eink-esp32':
+                        example = reference['data']['example_references'][0]
+                        source = await client.call('get_reference', id=example, section='code')
+                        assert 'GxEPD2' in source['data']['files'][0]['content']
+                group = board['activeFileGroupId']
+                document['fileGroups'][group] = [{'name': 'sketch.ino', 'content': code}]
+                def wire(index, left, pin, right, other_pin):
+                    return {'id': 'w' + str(index), 'start': {'componentId': left, 'pinName': pin},
+                            'end': {'componentId': right, 'pinName': other_pin}}
+                if name == 'led-uno':
+                    led, resistor = [item['id'] for item in document['components']]
+                    document['wires'] = [wire(1, board['id'], '13', resistor, '1'), wire(2, resistor, '2', led, 'A'), wire(3, led, 'C', board['id'], 'GND.1')]
+                elif name == 'servo-nano':
+                    servo = document['components'][0]['id']
+                    document['wires'] = [wire(i, board['id'], pin, servo, target) for i, (pin, target) in enumerate([('9', 'PWM'), ('5V', 'V+'), ('GND.1', 'GND')])]
+                else:
+                    epd = document['components'][0]['id']
+                    document['wires'] = [wire(i, board['id'], pin, epd, target) for i, (pin, target) in enumerate([
+                        ('18', 'SCK'), ('23', 'SDI'), ('5', 'CS'), ('17', 'DC'), ('16', 'RST'), ('4', 'BUSY'), ('3V3', 'VCC'), ('GND', 'GND')])]
+                saved = await client.call('save_project', document=document)
             checked = await client.call('check_project', project_id=saved['project_id'], version=saved['version'])
             assert checked['structure_status'] == 'valid', (name, checked['issues'])
             assert not any(item['severity'] == 'error' for item in checked['issues'])
@@ -156,7 +170,8 @@ async def evaluate():
     catalog = Catalog.from_snapshot(ROOT / 'backend/app/mcp/compact/catalog.snapshot.json')
     return {'method': 'deterministic scripted client; strict six-tool schemas; controlled owner adapter',
             'real_llm_used': False, 'real_compiler_used': False,
-            'scenarios': [await run_scenario(catalog, scenario) for scenario in SCENARIOS]}
+            'baseline': [await run_scenario(catalog, scenario) for scenario in SCENARIOS],
+            'scenarios': [await run_scenario(catalog, scenario, from_example=True) for scenario in SCENARIOS]}
 
 
 if __name__ == '__main__':

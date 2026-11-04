@@ -80,6 +80,7 @@ class Catalog:
         # Legacy model-generated cursors are ignored, never decoded or reused.
         arguments.pop("cursor", None)
         def run():
+            from .examples import recipe_metadata
             if set(arguments) - {"query", "kind", "limit", "offset"}:
                 raise CatalogError("invalid_argument", "Unknown search argument")
             query, kind, limit = arguments.get("query", ""), arguments.get("kind", "all"), arguments.get("limit", 5)
@@ -104,6 +105,8 @@ class Catalog:
                        for e in self._entries.values() if kind == "all" or e["kind"] == kind]
             matches = [e for e, fields in indexed if any(normalized in field for field in fields)]
             matches.sort(key=lambda e: e["id"])
+            if kind == 'example' and query.strip():
+                matches.sort(key=lambda entry: not recipe_metadata(entry['id'])['supported'])
             used = [query] if query.strip() else []
             # Expand only a genuinely empty result set, never an empty page.
             # Score the union by matching terms, then ID: stable across pages.
@@ -118,11 +121,12 @@ class Catalog:
                     if hits:
                         scored.append((len(hits), entry))
                         matched_terms.update(hits)
-                matches = [entry for _, entry in sorted(scored, key=lambda item: (-item[0], item[1]["id"]))]
+                matches = [entry for _, entry in sorted(scored, key=lambda item: (-item[0], not recipe_metadata(item[1]['id'])['supported'] if kind == 'example' else False, item[1]["id"]))]
                 used = [word for term, word in terms.items() if term in matched_terms]
             page = matches[offset:offset + limit]
             return {"ok": True, "revision": self.revision, "items": [
                 {"id": e["id"], "kind": e["kind"], "name": e["name"], "summary": e["summary"][:300],
+                 **({'from_example': recipe_metadata(e['id'])} if e['kind'] == 'example' else {}),
                  **({"metadataId" if e["kind"] == "component" else "boardKind": e["key"]} if e["kind"] in ("component", "board") else {})} for e in page],
                 "query_original": query, "query_used": used,
                 "total": len(matches), "has_more": offset + len(page) < len(matches),
@@ -131,6 +135,7 @@ class Catalog:
 
     def get_reference(self, **arguments):
         def run():
+            from .examples import recipe_metadata
             if set(arguments) - {"id", "section"}:
                 raise CatalogError("invalid_argument", "Unknown reference argument")
             key, section = arguments.get("id"), arguments.get("section", "overview")
@@ -168,6 +173,9 @@ class Catalog:
             overview.update({"libraries": list(summary_libraries.values()) or "unknown", "init": "unknown"})
             examples = self.related_examples(e["id"], limit=8)
             overview["example_references"] = [item["id"] for item in examples]
+            overview['example_options'] = [{'id': item['id'], 'from_example': recipe_metadata(item['id'])} for item in examples]
+            if e['kind'] == 'example':
+                overview['from_example'] = recipe_metadata(e['id'])
             if "panel" in e and e["panel"]:
                 overview["panel"] = e["panel"]
             if "fqbn" in e:
@@ -185,13 +193,17 @@ class Catalog:
                       ]} if project else "unknown"}
             if e["kind"] == "component":
                 values["project"]["example_references"] = overview["example_references"]
+                values['project']['example_options'] = overview['example_options']
             result = {"ok": True, "id": e["id"], "revision": self.revision, "section": section, "data": values[section]}
+            if e['kind'] == 'example':
+                result['from_example'] = recipe_metadata(e['id'])
             if section == "project" and e["kind"] in ("component", "board"):
                 # Keep board data directly saveable; metadata belongs outside
                 # that native document. Component data remains an append fragment.
                 result["instance_template"] = copy.deepcopy(values["project"]["boards"][0] if e["kind"] == "board"
                                                             else values["project"]["instance_template"])
                 result["example_references"] = overview["example_references"]
+                result['example_options'] = overview['example_options']
             if e["kind"] == "board":
                 result["execution"] = {"supported": False, "state": "unsupported",
                     "message": "The six-tool MCP compiles projects; it does not run a simulator. Do not poll for simulation startup."}
@@ -217,20 +229,25 @@ class Catalog:
 
     @staticmethod
     def _uses(project, entry):
+        from .examples import uses_component
         if entry["kind"] == "component":
-            return any(c["type"].removeprefix("wokwi-").removeprefix("velxio-") == entry["key"] for c in project["components"])
+            return uses_component('example:' + project.get('id', ''), entry['key']) or any(c["type"].removeprefix("wokwi-").removeprefix("velxio-") == entry["key"] for c in project["components"])
         return entry["kind"] == "board" and (project.get("boardType") == entry["key"] or any(b["boardKind"] == entry["key"] for b in project.get("boards", [])))
 
     def _example_summary(self, entry, board_kind=None):
+        from .examples import recipe_metadata
         project = entry["project"]
+        recipe = recipe_metadata(entry['id'])
         boards = list(dict.fromkeys([
             *([project["boardType"]] if project.get("boardType") else []),
             *(board["boardKind"] for board in project.get("boards", [])),
         ]))
+        if not boards and recipe['supported']:
+            boards = [recipe['parameters']['properties']['board']['default']]
         return {"id": entry["id"], "title": entry["name"], "board_kinds": boards,
                 "libraries": project.get("libraries", []),
                 "code_available": bool(self._files(project)),
-                "matches_active_board": board_kind in boards if board_kind else False}
+                "matches_active_board": board_kind in boards if board_kind else False, 'from_example': recipe}
 
     def related_examples(self, reference_id, board_kind=None, limit=5):
         """Metadata only, from actual matching examples; no code or compatibility invented."""
@@ -239,7 +256,7 @@ class Catalog:
             return []
         examples = [self._example_summary(item, board_kind) for item in self._entries.values()
                     if item["kind"] == "example" and self._uses(item["project"], entry)]
-        examples.sort(key=lambda item: (not item["matches_active_board"], not item["code_available"], item["id"]))
+        examples.sort(key=lambda item: (not item["matches_active_board"], not item['from_example']['supported'], not item["code_available"], item["id"]))
         return examples[:limit]
 
     def suggest_references(self, reference_id, limit=3):

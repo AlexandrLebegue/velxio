@@ -348,14 +348,22 @@ def patch(doc, changes):
 def validate_save_arguments(arguments):
     if not isinstance(arguments, dict):
         invalid('', arguments, 'save_project argument object')
-    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version', 'sketch', 'board', 'board_id', 'libraries'}:
-        invalid(pointer('', field), arguments[field], 'known save argument: document, changes, project_id, expected_version')
+    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version', 'sketch', 'board', 'board_id', 'libraries', 'from_example', 'parameters'}:
+        invalid(pointer('', field), arguments[field], 'known save argument: document, changes, sketch, from_example and their documented options')
     updating = 'project_id' in arguments
     if ('expected_version' in arguments) != updating:
         field = 'expected_version' if updating else 'project_id'
         invalid('/' + field, MISSING, 'required together: project_id and expected_version for updates')
-    if sum(field in arguments for field in ('document', 'changes', 'sketch')) != 1:
-        invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document, changes or sketch')
+    if sum(field in arguments for field in ('document', 'changes', 'sketch', 'from_example')) != 1:
+        invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document, changes, sketch or from_example')
+    if 'from_example' in arguments:
+        text(arguments['from_example'], maximum=240, path='/from_example')
+        if updating:
+            invalid('/project_id', arguments['project_id'], 'from_example creates a new isolated project; it never overwrites an existing project')
+        if not isinstance(arguments.get('parameters', {}), dict):
+            invalid('/parameters', arguments['parameters'], 'short parameter object from the example reference')
+    elif 'parameters' in arguments:
+        invalid('/parameters', arguments['parameters'], 'parameters requires from_example')
     if 'sketch' in arguments:
         if not isinstance(arguments['sketch'], str):
             invalid('/sketch', arguments['sketch'], 'plain source text')
@@ -542,11 +550,19 @@ class ProjectStore:
         def run():
             raw = validate_save_arguments(arguments)
             sketch_info = None
-            if 'sketch' in arguments:
-                from .authoring import sketch_document
+            if 'sketch' in arguments or 'from_example' in arguments:
                 if self.catalog is None:
                     from .catalog import Catalog
                     self.catalog = Catalog.from_snapshot(Path(__file__).with_name('catalog.snapshot.json'))
+            provenance = None
+            if 'from_example' in arguments:
+                from .examples import instantiate
+                key = arguments['from_example']
+                doc, provenance = instantiate(self.catalog, key if key.startswith('example:') else 'example:' + key, arguments.get('parameters', {}))
+                raw = validate_document(doc)
+                sketch_info = (doc['activeBoardId'], 'sketch.ino')
+            elif 'sketch' in arguments:
+                from .authoring import sketch_document
                 if 'project_id' not in arguments:
                     doc, board_id, name = sketch_document(self.catalog, arguments)
                     raw = validate_document(doc)
@@ -614,7 +630,9 @@ class ProjectStore:
                                 "project_artifact_id": meta["artifact_id"], "summary": "Native project snapshot saved", "download_url": None}
                         if sketch_info:
                             from .authoring import sketch_warnings
-                            result.update(board_id=sketch_info[0], sketch_file=sketch_info[1], warnings=sketch_warnings(arguments['sketch'], sketch_info[1]))
+                            result.update(board_id=sketch_info[0], sketch_file=sketch_info[1], warnings=sketch_warnings(arguments.get('sketch', ''), sketch_info[1]))
+                        if provenance:
+                            result['example_provenance'] = provenance
                         return result
         return self._response(run)
 
