@@ -14,21 +14,29 @@ Compilation does not validate displayed pixels, motion, sensor accuracy or LED t
 | P1-B3 | 38 | invalid_argument:6 | [3, 3] | 798173 | 720.06 | N/Y/N/N/N | False | False |
 | P1-B4 | 44 | invalid_argument:6 | [4, 3] | 1053138 | 720.07 | N/N/N/N/N | False | False |
 | P1-B5 | 32 | invalid_argument:10, project_invalid:1 | [3, 5] | 555482 | 720.06 | N/Y/N/N/N | False | False |
+| P2-B1 | 13 | 0 | [] | 103250 | 117.12 | Y/Y/Y/Y/Y | True | True |
+| P2-B2 | 14 | not_found:1 | [7] | 185548 | 99.22 | Y/Y/Y/Y/Y | True | True |
+| P2-B3 | 8 | 0 | [] | 45457 | 61.81 | Y/Y/Y/Y/Y | True | True |
+| P2-B4 | 7 | 0 | [] | 38773 | 57.71 | Y/Y/Y/Y/Y | True | True |
+| P2-B5 | 13 | 0 | [5] | 160542 | 99.74 | Y/Y/Y/Y/Y | True | True |
 
 ## Pass scores and exact failure families
 p1: 1/5 strict; errors [4, 7, 6, 6, 11]; complete=True; qualifying=False; revision `825f95e9550f`.
 - `dependencies_unknown`: `{"arguments":{"action":"start","board_id":"arduino-uno-1","project_id":"p_9c56ab4730954935847ce3b01d5202e2","version":"5b738440884381ff83155e41f0bc01752cbb662862e5dde2942d8849ec9bf965","wait_seconds":60},"tool":"build_project"}`
 - `invalid_argument`: `{"arguments":{"expected_version":"502da1f6fa4f068697d36f2c70e5f8a33d589e1537450d5766744d9d5e915386"},"tool":"save_project"}`
 - `project_invalid`: `{"arguments":{"action":"start","board_id":"arduino-uno-1","project_id":"p_4035a67ccdd546a2bcceeb9caadbdd3a","version":"e27cbb314e6ae32de32191618b90966edbff4c5bf3461fc1296835f30b8172f4","wait_seconds":60},"tool":"build_project"}`
+p2: 5/5 strict; errors [0, 1, 0, 0, 0]; complete=True; qualifying=True; revision `a8a6fc842be1`.
+- `not_found`: `{"arguments":{"id":"component:push-button","section":"project"},"tool":"get_reference"}`
 
 ## Changes and evidence
 - `1e36e2d1`: removed named wiring, retaining native start/end wires, e-paper pins and all ESP32 paths. 31 agent + 168 compact tests passed.
 - `825f95e9`: real AVR inventory/admission and regression bench. Genuine HTTP/MCP control returned done/success=true/test_only=false with a real HEX; 31 agent + 171 compact tests passed.
 - Cycle 1 measured 1/5 strict successes; error counts were [4,7,6,6,11], so no run set qualified. B3/B4/B5 reached the 720-second deadline. B1 compiled but used nonexistent cathode K; B2 implemented debounced toggle correctly.
-- Prepared cycle 2, not yet measured: lossless normalization of complete encoded structures and scalar numbers; incomplete strings remain errors. The LLM discovery schema is smaller while native validation remains authoritative.
-- Prepared cycle 2: real installed web-component pad references (including the distinct 4-pin I2C OLED) replace unknown names where evidence exists. Native endpoint aliases use the editor resolver; no named-wiring command is reintroduced.
-- Prepared cycle 2: scalar LED resistance/color, portable analog servo control, debounced button modes and composable sensor readouts/alarms; values and modes remain explicit parameters, with no benchmark prompt matching. E-paper gains optional metric-based centering without changing its default pins.
+- Cycle 2 implementation: lossless normalization of complete encoded structures and scalar numbers; incomplete strings remain errors. The LLM discovery schema is smaller while native validation remains authoritative.
+- Cycle 2: real installed web-component pad references (including the distinct 4-pin I2C OLED) replace unknown names where evidence exists. Native endpoint aliases use the editor resolver; no named-wiring command is reintroduced.
+- Cycle 2: scalar LED resistance/color, portable analog servo control, debounced button modes and composable sensor readouts/alarms; values and modes remain explicit parameters, with no benchmark prompt matching. E-paper gains optional metric-based centering without changing its default pins.
 - Candidate verification: six real AVR REST-owner builds passed across alternate sensor/display/alarm and board combinations; 31 agent + 177 compact MCP tests passed, including ESP32. These controls are not counted as Qwen benchmark successes.
+- Measured cycle 2 (`a8a6fc84`): 5/5 strict successes; MCP calls [13,14,8,7,13] versus [25,25,38,44,32], errors [0,1,0,0,0] versus [4,7,6,6,11]. All five read their final successful real owner build and independently recompile. One not_found ID guess remains; B2 repeats one search seven times and B5 five times. First qualifying pass; no further MCP change before confirmation.
 
 HTTP trace: the malformed value is already present in the Qwen API response; OpenCode tool input and MCP incoming HTTP are identical.
 Exact observed upstream value: `{"changes":"[{\"op\": \"set\", \"path\": \"/"}`. The internal distinction between model generation and the Qwen server parser is not observable here.
