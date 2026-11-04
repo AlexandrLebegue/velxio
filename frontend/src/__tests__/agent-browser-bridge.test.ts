@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
 
@@ -10,6 +11,7 @@ const fixture = vi.hoisted(() => {
     activeFileGroupId: 'sketch',
     running: false,
     compiledProgram: null as string | null,
+    libraries: undefined as string[] | undefined,
   };
   return {
     board,
@@ -63,6 +65,7 @@ vi.mock('../utils/vlxFile', () => ({
       x: board.x,
       y: board.y,
       activeFileGroupId: board.activeFileGroupId,
+      ...(board.libraries === undefined ? {} : { libraries: board.libraries }),
     })),
     fileGroups: fixture.files,
     components: [],
@@ -89,7 +92,9 @@ beforeEach(() => {
   });
   fixture.board.running = false;
   fixture.board.compiledProgram = null;
+  fixture.board.libraries = undefined;
   fixture.board.boardKind = 'arduino-uno';
+  fixture.board.x = 0;
   fixture.engineRunning = false;
   fixture.files = { sketch: [{ name: 'sketch.ino', content: 'void setup() {}\nvoid loop() {}' }] };
   vi.clearAllMocks();
@@ -169,6 +174,87 @@ describe('project-scoped agent bridge', () => {
       state: 'blocked',
     });
     dispose();
+  });
+
+  it('automatically merges a native source edit with an independent manual board move', async () => {
+    const base = structuredClone(snapshotForAgent());
+    const document = structuredClone(base);
+    document.fileGroups.sketch[0].content = 'void setup() {}\nvoid loop() { delay(7); }';
+    fixture.board.x = 120;
+    const result = await handleAgentBrowserCommand({
+      command_id: 'merge-move-source',
+      action: 'apply',
+      document,
+      base_document: base,
+      expected_revision: await projectRevision(base),
+      revision: await projectRevision(document),
+    });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(fixture.board.x).toBe(120);
+    expect(fixture.files.sketch[0].content).toContain('delay(7)');
+    expect(result.applied_revision).toBe(await projectRevision());
+    fixture.board.x = 0;
+  });
+
+  it('reports the real revision after the compiler completes the library manifest', async () => {
+    const base = structuredClone(snapshotForAgent());
+    const before = await projectRevision(base);
+    const dispose = registerProjectExecutor(async () => {
+      fixture.board.libraries = ['Servo'];
+      fixture.board.compiledProgram = 'firmware';
+      fixture.board.running = fixture.engineRunning = true;
+    });
+    try {
+      const result = await handleAgentBrowserCommand({
+        command_id: 'manifest-update',
+        action: 'run',
+        expected_revision: before,
+        revision: before,
+        base_document: base,
+        document: base,
+      });
+      const after = await projectRevision();
+      expect(after).not.toBe(before);
+      expect(result).toMatchObject({
+        ok: true,
+        confirmed: true,
+        revision: after,
+        applied_revision: after,
+      });
+      const next = await handleAgentBrowserCommand({
+        command_id: 'after-manifest',
+        action: 'observe',
+        expected_revision: after,
+        duration_ms: 0,
+      });
+      expect(next.ok).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('never calls a compile result current when the user changed source during the build', async () => {
+    const base = structuredClone(snapshotForAgent());
+    const before = await projectRevision(base);
+    const dispose = registerProjectExecutor(async () => {
+      fixture.board.compiledProgram = 'firmware';
+      fixture.board.running = fixture.engineRunning = true;
+      fixture.files.sketch[0].content = 'void setup() {}\nvoid loop() { delay(91); }';
+    });
+    try {
+      const result = await handleAgentBrowserCommand({
+        command_id: 'manual-during-build',
+        action: 'run',
+        expected_revision: before,
+        revision: before,
+        base_document: base,
+        document: base,
+      });
+      expect(result).toMatchObject({ ok: false, state: 'stale', confirmed: false });
+      expect(fixture.files.sketch[0].content).toContain('delay(91)');
+    } finally {
+      dispose();
+    }
   });
 
   it('stops a pending execution and prevents a late compile from leaving the board running', async () => {

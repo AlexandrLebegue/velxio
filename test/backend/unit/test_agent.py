@@ -453,7 +453,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["validated"] and result["applied"])
         self.assertEqual(len(session.workspace.document["wires"]), 1)
 
-    async def test_browser_pin_resolution_is_saved_before_apply_and_rolled_back_on_disconnect(self):
+    async def test_browser_pin_resolution_is_validated_before_apply_and_disconnect_keeps_previous_project(self):
         from app.agent.workspace import project_revision
         session = self.runtime.create("owner", document())
         session.browser_seen = time.monotonic()
@@ -467,7 +467,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
         apply = session.events[-1]["payload"]
         self.assertEqual(apply["action"], "apply")
-        self.assertEqual(session.workspace.document["wires"][0]["start"]["pinName"], "13")
+        self.assertEqual(apply['document']['wires'][0]['start']['pinName'],'13')
+        self.assertEqual(session.workspace.document['wires'],[])
         session.pending[apply["command_id"]].set_exception(AgentError("browser_unavailable", "Disconnected"))
         self.assertFalse((await operation)["ok"])
         self.assertEqual(session.workspace.document["wires"], [])

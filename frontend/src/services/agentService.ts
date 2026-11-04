@@ -20,6 +20,7 @@ export interface AgentSettings {
 export interface AgentSession {
   id: string;
   revision: string;
+  editor_revision?: string;
   sequence: number;
   busy: boolean;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -95,6 +96,10 @@ function canonical(value: unknown): unknown {
     );
   }
   return value;
+}
+
+export function agentValueEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }
 
 /** Same semantic snapshot hash as the backend, independent of export date. */

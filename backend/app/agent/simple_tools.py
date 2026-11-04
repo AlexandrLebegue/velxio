@@ -261,16 +261,18 @@ class SimpleChatTools:
                            'checks':{'structure_status':checked['structure_status']}}
             return await self.compile(args,self.last_run)
         result=await self.runtime.browser_command(self.session,'run',document=self.session.workspace.document,revision=current)
-        self.last_run={'mode':'simulation','revision':current,'result':result,
+        executed=result.get('applied_revision',current)
+        self.last_run={'mode':'simulation','revision':executed,'result':result,
                        'checks':{'structure_status':checked['structure_status']}}
-        return self.simulation_result(result,current)
+        return self.simulation_result(result,executed)
 
     def simulation_result(self, result, revision):
         matches=revision==project_revision(self.session.workspace.capture())
         if self.last_run:self.last_run['result']=result
         if not matches:
             return {'ok':False,'state':'stale','confirmed':False,'error':{'code':'revision_conflict','message':'Files changed during execution. Call run() for the current files; this result covers an older revision.'}}
-        value={**result,'workspace_revision':revision,'matches_current_workspace':True,
+        exposed={k:v for k,v in result.items() if k not in ('document','editor_document','editor_revision','applied_revision')}
+        value={**exposed,'workspace_revision':revision,'matches_current_workspace':True,
                'behavior_verified':False,'checks':self.last_run.get('checks',{}) if self.last_run else {}}
         if result.get('error',{}).get('code')=='compilation_failed':
             value['compilation']={'success':False,'source':'editor run pipeline'}

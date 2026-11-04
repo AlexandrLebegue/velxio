@@ -43,6 +43,7 @@ class StrictBody(BaseModel):
 class ProjectBody(StrictBody):
     document: dict
     expected_revision: str = Field(default="", max_length=64)
+    base_revision: str | None = Field(default=None,max_length=64)
 
 
 class MessageBody(StrictBody):
@@ -88,13 +89,17 @@ async def get_session(sid: str, principal=Depends(owner)):
 
 
 @router.get("/sessions/{sid}/workspace")
-async def read_workspace(sid: str, principal=Depends(owner)):
-    return runtime.get(principal, sid).workspace.describe()
+async def read_workspace(sid: str, base: bool=False, principal=Depends(owner)):
+    session=runtime.get(principal,sid)
+    if base:
+        document=session.editor_document or session.workspace.document
+        return {'document':document,'revision':project_revision(document)}
+    return session.workspace.describe()
 
 
 @router.patch("/sessions/{sid}/workspace")
 async def sync_workspace(sid: str, body: ProjectBody, principal=Depends(owner)):
-    return runtime.sync(runtime.get(principal, sid), body.document, body.expected_revision)
+    return runtime.sync(runtime.get(principal, sid), body.document, body.expected_revision,body.base_revision)
 
 
 @router.post("/sessions/{sid}/messages")
@@ -124,8 +129,10 @@ async def browser_result(sid: str, body: BrowserResult, principal=Depends(owner)
     future = session.pending.get(body.command_id)
     if future is None or future.done():
         raise AgentError("command_expired", "Browser command expired", 409)
-    if len(json.dumps(body.result).encode()) > 24000:
-        raise AgentError("quota_exceeded", "Browser result exceeds 24 KiB")
+    # Internal editor snapshots are up to 2 MiB each; they are distinct from
+    # the model-facing 24 KiB tool-response budget.
+    if len(json.dumps(body.result).encode()) > 8*1024*1024:
+        raise AgentError("quota_exceeded", "Browser result exceeds 8 MiB")
     future.set_result(body.result)
     return {"ok": True}
 

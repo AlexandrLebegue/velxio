@@ -4,7 +4,7 @@ import { useCompileLogsStore } from '../store/useCompileLogsStore';
 import { buildVlxPayload } from '../utils/vlxFile';
 import type { VlxPayload } from '../utils/vlxFile';
 import type { BoardInstance } from '../types/board';
-import { projectRevision } from './agentService';
+import { agentValueEqual, projectRevision } from './agentService';
 import {
   executeAgentProjectRun,
   projectExecutionStatus,
@@ -19,25 +19,48 @@ import {
 } from './agentCircuit';
 import { normalizeAgentDocument } from './agentDocument';
 import { flushElectricalResolve } from '../simulation/spice/electricalResolveHook';
+import { AgentMergeConflict, mergeAgentDocuments } from './agentMerge';
 
 const completed = new Map<string, Record<string, unknown>>();
 const pending = new Map<string, Promise<Record<string, unknown>>>();
+let editorEpoch = 0;
+export function invalidateAgentEditorSession(): void {
+  editorEpoch++;
+}
+export function agentEditorEpoch(): number {
+  return editorEpoch;
+}
 
 export async function applyAgentSnapshot(
   document: VlxPayload,
   expectedRevision: string,
-): Promise<void> {
-  if ((await projectRevision()) !== expectedRevision)
+  baseDocument?: VlxPayload,
+  preferLocal = false,
+  expectedEpoch = editorEpoch,
+): Promise<VlxPayload> {
+  if (expectedEpoch !== editorEpoch)
+    throw new AgentCircuitError(
+      'project_changed',
+      'The editor switched projects. The previous request was stopped.',
+    );
+  if ((await projectRevision()) !== expectedRevision && baseDocument)
+    document = mergeAgentDocuments(baseDocument, document, buildVlxPayload(), preferLocal).document;
+  else if ((await projectRevision()) !== expectedRevision)
     throw new Error(
       'Your project changed while the agent was working. Your manual edits have been preserved. Stop the agent, then send another message to synchronize them.',
     );
   // Unlike importVlxFile this keeps the identity used by cloud save/autosave.
-  const current = buildVlxPayload();
+  const current = structuredClone(buildVlxPayload());
+  expectedRevision = await projectRevision(current);
   const boardConfig = (payload: VlxPayload) =>
     payload.boards.map(({ serialBaudRate: _baud, ...board }) => board);
-  const boardsChanged =
-    JSON.stringify(boardConfig(current)) !== JSON.stringify(boardConfig(document));
+  const boardsChanged = !agentValueEqual(boardConfig(current), boardConfig(document));
   const candidate = await prepareAgentCircuit(document);
+  if (expectedEpoch !== editorEpoch)
+    throw new AgentCircuitError(
+      'project_changed',
+      'The editor switched projects. The previous request was stopped.',
+    );
   if ((await projectRevision()) !== expectedRevision)
     throw new AgentCircuitError(
       'revision_conflict',
@@ -58,15 +81,17 @@ export async function applyAgentSnapshot(
       }
       throw error;
     }
-    return;
+    return structuredClone(buildVlxPayload());
   }
   const circuitChanged =
-    JSON.stringify(current.components) !== JSON.stringify(candidate.components) ||
-    JSON.stringify(normalizeAgentDocument(current).wires) !== JSON.stringify(candidate.wires);
+    !agentValueEqual(current.components, candidate.components) ||
+    !agentValueEqual(normalizeAgentDocument(current).wires, candidate.wires);
   for (const board of sim.boards) {
     if (
-      JSON.stringify(current.fileGroups[board.activeFileGroupId]) !==
-      JSON.stringify(candidate.fileGroups[board.activeFileGroupId])
+      !agentValueEqual(
+        current.fileGroups[board.activeFileGroupId],
+        candidate.fileGroups[board.activeFileGroupId],
+      )
     ) {
       if (board.running) sim.stopBoard(board.id);
       sim.updateBoard(board.id, { compiledProgram: null, compiledUf2: null });
@@ -74,8 +99,8 @@ export async function applyAgentSnapshot(
     if (circuitChanged && board.running) sim.stopBoard(board.id);
   }
   if (
-    JSON.stringify(current.fileGroups) !== JSON.stringify(candidate.fileGroups) ||
-    JSON.stringify(current.folderGroups) !== JSON.stringify(candidate.folderGroups)
+    !agentValueEqual(current.fileGroups, candidate.fileGroups) ||
+    !agentValueEqual(current.folderGroups, candidate.folderGroups)
   )
     useEditorStore.getState().replaceFileGroups(candidate.fileGroups, candidate.folderGroups);
   if (circuitChanged) {
@@ -95,11 +120,33 @@ export async function applyAgentSnapshot(
   await new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   );
+  return structuredClone(buildVlxPayload());
 }
 
 async function perform(command: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const expected = command.expected_revision as string;
-  if ((await projectRevision()) !== expected)
+  const epoch = editorEpoch;
+  let expected = command.expected_revision as string;
+  const observed = structuredClone(buildVlxPayload());
+  const observedRevision = await projectRevision(observed);
+  if (epoch !== editorEpoch)
+    throw new AgentCircuitError('project_changed', 'The editor switched projects.');
+  // Read-only metadata must not fail merely because the editor moved ahead.
+  if (command.action === 'inspect_project')
+    return { ...inspectAgentProject(), document: observed, revision: observedRevision };
+  if (command.action === 'describe_part')
+    return describeAgentPart(String(command.kind), String(command.part_id));
+  if (command.document && command.base_document) {
+    command = {
+      ...command,
+      document: mergeAgentDocuments(
+        command.base_document as VlxPayload,
+        command.document as VlxPayload,
+        observed,
+      ).document,
+    };
+    expected = observedRevision;
+  }
+  if (observedRevision !== expected && command.action !== 'stop')
     return {
       ok: false,
       error: {
@@ -107,9 +154,6 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         message: 'Manual project edits were preserved. Stop and synchronize before continuing.',
       },
     };
-  if (command.action === 'inspect_project') return inspectAgentProject();
-  if (command.action === 'describe_part')
-    return describeAgentPart(String(command.kind), String(command.part_id));
   if (command.action === 'validate_circuit') {
     const candidate = await prepareAgentCircuit(command.document as VlxPayload);
     return {
@@ -118,15 +162,24 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
       revision: await projectRevision(candidate),
       connections: candidate.wires.length,
       document: candidate,
+      editor_document: observed,
+      editor_revision: observedRevision,
     };
   }
   if (command.action === 'apply') {
-    await applyAgentSnapshot(command.document as VlxPayload, expected);
+    const document = await applyAgentSnapshot(
+      command.document as VlxPayload,
+      expected,
+      observed,
+      false,
+      epoch,
+    );
     const revision = await projectRevision();
     return {
-      ok: revision === command.revision,
+      ok: revision === (await projectRevision(document)),
       applied_revision: revision,
       revision,
+      document,
       validated: true,
       connections: (command.document as VlxPayload).wires.length,
       boards: (command.document as VlxPayload).boards.map(({ id, boardKind }) => ({
@@ -144,19 +197,26 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
         ok: false,
         error: { code: 'project_not_empty', message: 'The current project is no longer empty.' },
       };
-    await applyAgentSnapshot(document, expected);
+    const applied = await applyAgentSnapshot(document, expected, observed, false, epoch);
     const revision = await projectRevision();
     return {
-      ok: revision === command.revision,
+      ok: revision === (await projectRevision(applied)),
       applied_revision: revision,
       state: 'ready',
       revision,
+      document: applied,
     };
   }
   if (command.action === 'run') {
-    await applyAgentSnapshot(command.document as VlxPayload, expected);
+    const applied = await applyAgentSnapshot(
+      command.document as VlxPayload,
+      expected,
+      observed,
+      false,
+      epoch,
+    );
     const revision = await projectRevision();
-    if (revision !== command.revision)
+    if (revision !== (await projectRevision(applied)))
       return {
         ok: false,
         error: {
@@ -164,7 +224,55 @@ async function perform(command: Record<string, unknown>): Promise<Record<string,
           message: 'The loaded project does not match the requested revision.',
         },
       };
-    return { ...(await executeAgentProjectRun()), applied_revision: revision, revision };
+    const result = await executeAgentProjectRun();
+    const actual = structuredClone(buildVlxPayload());
+    // Only library discovery may change the compile manifest without changing
+    // what the user/model asked to build. Other concurrent edits stay visible.
+    const compatible = structuredClone(applied);
+    for (const board of compatible.boards) {
+      const current = actual.boards.find((item) => item.id === board.id);
+      if (current) {
+        board.x = current.x;
+        board.y = current.y;
+      }
+      if (current?.libraries === undefined) delete board.libraries;
+      else board.libraries = current.libraries;
+    }
+    for (const component of compatible.components) {
+      const current = actual.components.find((item) => item.id === component.id);
+      if (current) {
+        component.x = current.x;
+        component.y = current.y;
+      }
+    }
+    for (const wire of compatible.wires) {
+      const current = actual.wires.find((item) => item.id === wire.id);
+      if (current) {
+        wire.color = current.color;
+        wire.waypoints = current.waypoints;
+      }
+    }
+    const finalRevision = await projectRevision(actual);
+    if ((await projectRevision(compatible)) !== finalRevision)
+      return {
+        ok: false,
+        state: 'stale',
+        confirmed: false,
+        document: actual,
+        applied_revision: finalRevision,
+        revision: finalRevision,
+        error: {
+          code: 'execution_changed',
+          message:
+            'The project changed during compilation. Your latest edits were preserved; run the current project again.',
+        },
+      };
+    return {
+      ...result,
+      document: actual,
+      applied_revision: finalRevision,
+      revision: finalRevision,
+    };
   }
   if (command.action === 'stop') {
     cancelAgentProjectRun();
@@ -207,13 +315,34 @@ export function handleAgentBrowserCommand(
   if (saved) return Promise.resolve(saved);
   const existing = pending.get(id);
   if (existing) return existing;
-  const operation = perform(command)
+  const operation = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await perform(command);
+      } catch (error) {
+        if (
+          attempt >= 2 ||
+          !command.base_document ||
+          !['validate_circuit', 'apply'].includes(String(command.action)) ||
+          !(error instanceof AgentCircuitError) ||
+          error.code !== 'revision_conflict'
+        )
+          throw error;
+      }
+    }
+  })()
     .catch((error: unknown) => ({
       ok: false,
       error: {
-        code: error instanceof AgentCircuitError ? error.code : 'editor_error',
+        code:
+          error instanceof AgentCircuitError || error instanceof AgentMergeConflict
+            ? error.code
+            : 'editor_error',
         message: error instanceof Error ? error.message : 'Editor action failed.',
         ...(error instanceof AgentCircuitError ? { details: error.details } : {}),
+        ...(error instanceof AgentMergeConflict
+          ? { details: { conflicting_paths: error.paths } }
+          : {}),
       },
     }))
     .then((result) => {
@@ -227,5 +356,5 @@ export function handleAgentBrowserCommand(
 }
 
 export function snapshotForAgent(): VlxPayload {
-  return buildVlxPayload();
+  return structuredClone(buildVlxPayload());
 }

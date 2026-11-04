@@ -37,6 +37,17 @@ comparison before application. A failed batch publishes no partial circuit.
 Removing a component also removes its attached wires. Board swaps preserve IDs
 and sources, remapping pins only when explicitly requested.
 
+Editor and agent snapshots now merge automatically against their last common
+snapshot. Components/boards/wires are matched by ID, source files by name;
+independent edits are combined instead of requiring a reconnect. Idle sync keeps
+the latest manual edit on a true overlap and retains the previous agent draft in
+immutable history. An active overlapping tool edit returns precise edit_conflict
+paths; the agent can read current state with components() rather than asking the
+user to synchronize. Read-only pin inspection is independent of snapshot age.
+Compiler-inferred library updates are acknowledged with the actual final editor
+revision. Internal editor callbacks allow bounded project snapshots up to 8 MiB;
+the model-facing 24 KiB tool-response budget is unchanged.
+
 Complete JSON strings used for arrays/objects and numeric/boolean strings are
 normalized losslessly; incomplete JSON is rejected, not guessed. Errors retain
 code/path/received/expected/next_action and refer to the four visible operations.

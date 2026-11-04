@@ -18,6 +18,8 @@ from .opencode import OpenCodeAdapter
 from .settings import AgentError, ConnectionSettings, SettingsStore, private_json
 from .workspace import Workspace, checked_document, project_revision
 from .display import display_text
+from .reconcile import merge_documents
+import copy
 
 ESP32_RUN_UNSUPPORTED = "ESP32 simulation is not supported by this agent bridge. Use run(simulate=false) for compilation only; do not wait or poll for simulation startup."
 
@@ -38,6 +40,7 @@ class Session:
     connection_hash: str = ""
     active_turn: str = ""
     browser_revision: str = ""
+    editor_document: Any = None
     browser_seen: float = 0
     browser_id: str = ""
     stream_id: str = ""
@@ -55,7 +58,7 @@ class Session:
         return self.task is not None and not self.task.done()
 
     def public(self):
-        return {"id": self.id, "revision": self.workspace.revision, "messages": self.messages, "turns": self.turns, "busy": self.busy, "sequence": self.sequence}
+        return {"id": self.id, "revision": self.workspace.revision, "editor_revision": self.browser_revision, "messages": self.messages, "turns": self.turns, "busy": self.busy, "sequence": self.sequence}
 
 
 class AgentRuntime:
@@ -106,6 +109,11 @@ class AgentRuntime:
                 'project_selection': 'This conversation already selects the project. Omit project_id and version.'}
 
     async def project_context(self, session):
+        inspection = None
+        if time.monotonic() - session.browser_seen <= 25:
+            inspection = await self.browser_command(session, 'inspect_project')
+            if inspection.get('ok') and isinstance(inspection.get('document'),dict):
+                self.adopt_editor(session, inspection['document'], inspection.get('revision'))
         value = session.workspace.capture()
         result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
                   "workspace": self.source_context(session),
@@ -113,8 +121,7 @@ class AgentRuntime:
                   "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()},
                   "capabilities": {"edit_components": True, "board_selection": "Use components(board=<boardKind>) to add or replace the active board.",
                                    "agent_run": "run() saves files, checks the circuit and uses the editor's compile/load/execute pipeline. run(simulate=false) compiles only. Pending results are resumed by run(), without a build ID. Only confirmed=true establishes startup, not functional correctness."}}
-        if time.monotonic() - session.browser_seen <= 25:
-            inspection = await self.browser_command(session, "inspect_project")
+        if inspection is not None:
             if inspection.get("ok"):
                 result["pinouts"] = inspection.get("pinouts", {})
                 session.available_boards = {board["boardKind"]: board for board in inspection.get("available_boards", [])}
@@ -130,6 +137,7 @@ class AgentRuntime:
         private_json(session.workspace.root / "session.json", {
             "id": session.id, "messages": session.messages[-100:], "sequence": session.sequence,
             "events": session.events[-150:], "browser_revision": session.browser_revision,
+            "editor_document": session.editor_document,
             "document": session.workspace.document,
             "requests": session.requests, "active_turn": session.active_turn,
             "turns": [{**turn, "message_index": turn["message_index"] - offset} for turn in session.turns[-30:] if turn["message_index"] >= offset],
@@ -177,7 +185,7 @@ class AgentRuntime:
             raise AgentError("quota_exceeded", "Maximum 16 active agent sessions per user", 409)
         sid = secrets.token_hex(16)
         workspace = Workspace(self.root / owner / "sessions" / sid, document)
-        session = Session(sid, owner, workspace, browser_revision=workspace.revision)
+        session = Session(sid, owner, workspace, browser_revision=workspace.revision, editor_document=copy.deepcopy(workspace.document))
         self.sessions[sid] = session
         self.save(session)
         return session
@@ -193,6 +201,10 @@ class AgentRuntime:
             data = json.loads(path.read_text())
             workspace = Workspace(path.parent, data["document"])
             session = Session(sid, owner, workspace, messages=data["messages"], sequence=data["sequence"], events=data.get("events", []), browser_revision=data.get("browser_revision", workspace.revision))
+            session.editor_document = data.get('editor_document') or copy.deepcopy(workspace.document)
+            if not data.get('editor_document') and len(session.browser_revision)==64 and all(c in '0123456789abcdef' for c in session.browser_revision):
+                base=workspace.root/'revisions'/(session.browser_revision+'.vlx')
+                if base.is_file():session.editor_document=checked_document(json.loads(base.read_text()))
             session.requests = data.get("requests", {})
             session.turns = data.get("turns", [])
             self.sessions[sid] = session
@@ -211,13 +223,42 @@ class AgentRuntime:
                 return session
         raise AgentError("unauthorized", "Inactive agent tool session", 401)
 
-    def sync(self, session, document, expected_revision):
-        if session.busy:
+    def adopt_editor(self, session, document, revision=None):
+        document=checked_document(document)
+        actual=project_revision(document)
+        if revision is not None and revision!=actual:
+            raise AgentError('invalid_project','Editor snapshot hash does not match its document.')
+        current=session.workspace.capture()
+        # The latest editor edits win only true overlaps; the previous agent
+        # draft is retained as an immutable revision before it is replaced.
+        merged,conflicts=merge_documents(session.editor_document or current,current,document,prefer_local=True)
+        session.workspace.commit(current)
+        session.workspace.sync(checked_document(merged),session.workspace.revision)
+        session.editor_document=copy.deepcopy(document)
+        session.browser_revision=actual
+        return conflicts
+
+    def sync(self, session, document, expected_revision, base_revision=None):
+        if session.busy and (not session.turns or session.turns[-1].get('status')=='running'):
             raise AgentError("turn_running", "Stop the agent before synchronizing manual edits", 409)
-        session.workspace.sync(document, expected_revision)
-        session.browser_revision = session.workspace.revision
+        document=checked_document(document)
+        revision=base_revision or expected_revision
+        if revision==session.workspace.revision:
+            base=session.workspace.document
+        elif len(revision)==64 and all(c in '0123456789abcdef' for c in revision):
+            path=session.workspace.root/'revisions'/(revision+'.vlx')
+            if not path.is_file():raise AgentError('revision_conflict','The common project snapshot is unavailable.',409)
+            base=checked_document(json.loads(path.read_text()))
+            if project_revision(base)!=revision:raise AgentError('invalid_project','Invalid common project snapshot.')
+        else:raise AgentError('revision_conflict','The common project snapshot is unavailable.',409)
+        current=session.workspace.capture()
+        merged,conflicts=merge_documents(base,current,document,prefer_local=True)
+        session.workspace.commit(current)
+        session.workspace.sync(checked_document(merged),session.workspace.revision)
+        session.browser_revision=project_revision(document)
+        session.editor_document=copy.deepcopy(document)
         self.save(session)
-        return session.public()
+        return {**session.public(),'document':session.workspace.document,'synchronization':{'automatic':True,'manual_changes_preserved':True,'overlaps':conflicts}}
 
     async def start_turn(self, session, message, request_id, callback_url):
         if request_id in session.requests:
@@ -270,7 +311,7 @@ class AgentRuntime:
                     "If pending, call run() again for progress; do not restart. Fix reported errors before retrying. "
                     "Only compilation.success=true for the current workspace proves compilation. Only confirmed=true acknowledges simulation startup. "
                     "Report saved/applied, compilation, simulation startup and observed behavior separately. Compilation does not prove blinking, movement or display output. "
-                    "On a revision conflict preserve manual edits and stop; never overwrite them by retrying stale changes. "
+                    "Editor changes synchronize automatically. On edit_conflict, read the latest state with components(); preserve the user's overlapping edits and never repeat a stale full snapshot. "
                     "Component/board catalog IDs differ from mounted instance IDs returned by components. Never run shell commands or install dependencies. "
                     "Reply in the user's language. Current project: " + json.dumps(context, ensure_ascii=False) +
                     ". Previous conversation after reconnect: " + json.dumps(session.messages[-8:-1], ensure_ascii=False)
@@ -387,9 +428,19 @@ class AgentRuntime:
         command_id = secrets.token_hex(16)
         future = asyncio.get_running_loop().create_future()
         session.pending[command_id] = future
+        if 'document' in data:
+            data={'base_document':copy.deepcopy(session.editor_document or session.workspace.document),**data}
         self.emit(session, "browser.command", {"command_id": command_id, "action": action, "expected_revision": session.browser_revision, **data})
         try:
             result = await asyncio.wait_for(future, self.settings.read(session.owner).timeout_seconds if action == "run" else 20)
+            if result.get('ok') and isinstance(result.get('editor_document'),dict):
+                observed=checked_document(result['editor_document'])
+                if project_revision(observed)!=result.get('editor_revision'):
+                    raise AgentError('invalid_project','Editor observation hash differs.')
+                session.editor_document=observed
+                session.browser_revision=result['editor_revision']
+            if action in ('apply','create','run','compile') and isinstance(result.get('document'),dict) and isinstance(result.get('applied_revision'),str):
+                self.adopt_editor(session,result['document'],result['applied_revision'])
             if result.get("applied_revision") == session.workspace.revision:
                 session.browser_revision = result["applied_revision"]
             return result
@@ -430,7 +481,6 @@ class AgentRuntime:
             raise
 
     async def apply_candidate(self, session, candidate):
-        previous = session.workspace.document
         revision = project_revision(candidate)
         validation = await self.browser_command(session, "validate_circuit", document=candidate, revision=revision)
         if not validation.get("ok"):
@@ -441,15 +491,11 @@ class AgentRuntime:
         revision = project_revision(candidate)
         if validation.get("revision") != revision:
             raise AgentError("revision_conflict", "Circuit normalization differs between server and editor")
-        session.workspace.commit(candidate)
-        try:
-            result = await self.browser_command(session, "apply", document=candidate, revision=revision)
-        except (Exception, asyncio.CancelledError):
-            session.workspace.commit(previous)
-            raise
+        result = await self.browser_command(session, "apply", document=candidate, revision=revision)
         if not result.get("ok"):
-            session.workspace.commit(previous)
             return result
+        # Older editor adapters do not return their final applied document.
+        self.adopt_editor(session,result.get('document',candidate),result.get('applied_revision',result.get('revision',revision)))
         self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
         return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"]),
                 **({'pinouts': result['pinouts']} if 'pinouts' in result else {})}

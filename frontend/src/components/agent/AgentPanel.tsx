@@ -13,7 +13,7 @@ import {
 } from '../../services/agentService';
 import type { AgentEvent, AgentSession, AgentSettings } from '../../services/agentService';
 import {
-  applyAgentSnapshot,
+  invalidateAgentEditorSession,
   handleAgentBrowserCommand,
   snapshotForAgent,
 } from '../../services/agentBrowserBridge';
@@ -22,6 +22,7 @@ import { AgentSettingsDialog } from './AgentSettingsDialog';
 import { cancelAgentProjectRun } from '../../services/projectExecution';
 import { generateUUID } from '../../utils/uuid';
 import { reduceAgentEvent } from '../../services/agentEvents';
+import { synchronizeAgentSession } from '../../services/agentSync';
 import { AgentMessageBody, AgentTimeline } from './AgentTimeline';
 import './AgentPanel.css';
 
@@ -59,9 +60,12 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
   const [width, setWidth] = useState(390);
   const savedProjectId = useProjectStore((state) => state.currentProject?.id);
   const location = useLocation();
-  const projectKey = String(savedProjectId ?? location.pathname);
+  const projectKey = String(savedProjectId ?? location.pathname + location.search);
   const connectionReady = useRef(false);
   const browserRevision = useRef('');
+  const baseRevision = useRef('');
+  const editorQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const turnFinished = useRef(true);
   const revision = useRef('');
   const seen = useRef(0);
   const end = useRef<HTMLDivElement>(null);
@@ -77,28 +81,43 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
     return () => onDockChange?.(0);
   }, [open, width, onDockChange]);
 
-  const refresh = useCallback(async (id: string, apply: boolean) => {
-    const updated = await agentRequest<AgentSession>(`/sessions/${id}`);
-    if (sessionRef.current?.id !== id) return;
-    setSession(updated);
-    // A terminal event can arrive while the server task is still cleaning up.
-    // Its persisted turn status is already final at that point.
-    setBusy(updated.busy && (updated.turns?.at(-1)?.status ?? 'running') === 'running');
-    if (!updated.busy || updated.messages.at(-1)?.role === 'assistant') {
-      setPartial('');
-      partials.current = {};
-    }
-    revision.current = updated.revision;
-    if (apply) {
-      const workspace = await agentRequest<{ document: VlxPayload; revision: string }>(
-        `/sessions/${id}/workspace`,
-      );
-      const local = await projectRevision();
-      if (local !== workspace.revision)
-        await applyAgentSnapshot(workspace.document, browserRevision.current);
-      browserRevision.current = workspace.revision;
-    }
+  const queueEditor = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const next = editorQueue.current.catch(() => {}).then(operation);
+    editorQueue.current = next;
+    return next;
   }, []);
+
+  const refresh = useCallback(
+    (id: string, apply: boolean) =>
+      queueEditor(async () => {
+        const updated = await agentRequest<AgentSession>(`/sessions/${id}`);
+        if (sessionRef.current?.id !== id) return;
+        const synced = apply
+          ? await synchronizeAgentSession(
+              id,
+              updated.revision,
+              baseRevision.current || updated.editor_revision || updated.revision,
+            )
+          : null;
+        if (sessionRef.current?.id !== id) return;
+        const current = synced?.session ?? updated;
+        setSession(current);
+        // A terminal event can arrive while the server task is still cleaning up.
+        // Its persisted turn status is already final at that point.
+        setBusy(current.busy && (current.turns?.at(-1)?.status ?? 'running') === 'running');
+        if (!current.busy || current.messages.at(-1)?.role === 'assistant') {
+          setPartial('');
+          partials.current = {};
+        }
+        revision.current = current.revision;
+        if (synced) {
+          browserRevision.current = synced.editorRevision;
+          baseRevision.current = synced.baseRevision;
+          sessionStorage.setItem(`velxio-agent-base:${projectKey}`, synced.baseRevision);
+        }
+      }),
+    [queueEditor, projectKey],
+  );
 
   useEffect(() => registerEditorCommand('agent.open', () => setOpen(true)), []);
   useEffect(
@@ -127,6 +146,12 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
 
   useEffect(() => {
     // A different editor project must detach the previous server conversation.
+    invalidateAgentEditorSession();
+    const previous = sessionRef.current;
+    if (previous?.id) {
+      cancelAgentProjectRun();
+      void agentRequest(`/sessions/${previous.id}/stop`, 'POST', {}).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSession(null);
     setBusy(false);
@@ -140,14 +165,19 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
       .then(async (value) => {
         if (!alive) return;
         let local = await projectRevision();
-        const baseline = sessionStorage.getItem(`velxio-agent-base:${projectKey}`);
-        if (!value.busy && baseline === local && local !== value.revision) {
-          const workspace = await agentRequest<{ document: VlxPayload }>(
-            `/sessions/${id}/workspace`,
+        const baseline =
+          value.editor_revision ||
+          sessionStorage.getItem(`velxio-agent-base:${projectKey}`) ||
+          value.revision;
+        baseRevision.current = baseline;
+        if (!value.busy) {
+          const synced = await queueEditor(() =>
+            synchronizeAgentSession(id, value.revision, baseline),
           );
           if (!alive) return;
-          await applyAgentSnapshot(workspace.document, local);
-          local = await projectRevision();
+          value = synced.session;
+          local = synced.editorRevision;
+          baseRevision.current = synced.baseRevision;
         }
         if (!alive) return;
         browserRevision.current = local;
@@ -155,6 +185,7 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
         seen.current = value.sequence;
         setSession(value);
         setBusy(value.busy);
+        turnFinished.current = !value.busy;
       })
       .catch(() => {
         sessionStorage.removeItem(`velxio-agent:${projectKey}`);
@@ -162,12 +193,13 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
     return () => {
       alive = false;
     };
-  }, [projectKey]);
+  }, [projectKey, queueEditor]);
 
   useEffect(() => {
     handler.current = (event) => {
       if (event.event_id <= seen.current) return;
       seen.current = event.event_id;
+      if (event.type === 'turn.started') turnFinished.current = false;
       const current = sessionRef.current;
       if (!current) return;
       setSession((value) =>
@@ -186,23 +218,28 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
       }
       if (event.type === 'message.completed') setPartial(String(event.payload.text ?? ''));
       if (event.type === 'browser.command') {
-        void handleAgentBrowserCommand(event.payload)
-          .then(async (result) => {
-            if (typeof result.applied_revision === 'string')
-              browserRevision.current = result.applied_revision;
-            await agentRequest(`/sessions/${current.id}/browser-result`, 'POST', {
-              command_id: event.payload.command_id,
-              browser_id: agentBrowserId(),
-              result,
-            });
-          })
-          .catch((cause: unknown) => setError(errorText(cause)));
+        void queueEditor(async () => {
+          if (sessionRef.current?.id !== current.id) return;
+          const result = await handleAgentBrowserCommand(event.payload);
+          if (typeof result.applied_revision === 'string')
+            browserRevision.current = baseRevision.current = result.applied_revision;
+          else if (typeof result.editor_revision === 'string')
+            browserRevision.current = baseRevision.current = result.editor_revision;
+          await agentRequest(`/sessions/${current.id}/browser-result`, 'POST', {
+            command_id: event.payload.command_id,
+            browser_id: agentBrowserId(),
+            result,
+          });
+        }).catch((cause: unknown) => setError(errorText(cause)));
       }
+      if (event.type === 'workspace.changed' && turnFinished.current)
+        void refresh(current.id, true).catch((cause: unknown) => setError(errorText(cause)));
       if (
         event.type === 'turn.completed' ||
         event.type === 'turn.interrupted' ||
         event.type === 'error'
       ) {
+        turnFinished.current = true;
         setBusy(false);
         if (event.type === 'error')
           setError(
@@ -215,7 +252,7 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
         void refresh(current.id, true).catch((cause: unknown) => setError(errorText(cause)));
       }
     };
-  }, [refresh, errorText, t]);
+  }, [refresh, errorText, t, queueEditor]);
 
   useEffect(() => {
     if (!session?.id) return;
@@ -242,6 +279,7 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
     if (!message.trim() || busy) return;
     setError('');
     setBusy(true);
+    turnFinished.current = false;
     autoScroll.current = true;
     partials.current = {};
     setPartial('');
@@ -255,19 +293,23 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
         setSession(current);
         sessionStorage.setItem(`velxio-agent:${projectKey}`, current.id);
         sessionStorage.setItem(`velxio-agent-base:${projectKey}`, local);
+        baseRevision.current = local;
         seen.current = 0;
         // The browser event stream must be connected before the agent can run.
         for (let attempt = 0; attempt < 100 && !connectionReady.current; attempt++)
           await new Promise((resolve) => setTimeout(resolve, 50));
         if (!connectionReady.current) throw new Error(t('agent.errors.editorNotReady'));
       } else {
-        current = await agentRequest<AgentSession>(`/sessions/${current.id}/workspace`, 'PATCH', {
-          document,
-          expected_revision: revision.current,
-        });
+        const id = current.id;
+        const synced = await queueEditor(() =>
+          synchronizeAgentSession(id, revision.current, baseRevision.current),
+        );
+        current = synced.session;
+        baseRevision.current = synced.baseRevision;
+        browserRevision.current = synced.editorRevision;
       }
       revision.current = current.revision;
-      browserRevision.current = local;
+      browserRevision.current = await projectRevision();
       const text = message.trim();
       await agentRequest(`/sessions/${current.id}/messages`, 'POST', {
         message: text,
