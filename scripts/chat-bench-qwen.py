@@ -33,6 +33,37 @@ VALIDATIONS = {
 }
 
 
+def prompt_proof(messages, prompt):
+    """Separate real user instructions from automatic harness compaction parts."""
+    users = [m for m in messages if m.get('info', {}).get('role') == 'user']
+    texts = [p for m in users for p in m.get('parts', []) if p.get('type') == 'text']
+    supplied = [p['text'] for p in texts if not p.get('synthetic')]
+    return {'single_exact_prompt': len(users) == 1 and [p['text'] for p in texts] == [prompt],
+            'single_exact_user_prompt': supplied == [prompt],
+            'synthetic_continuations': sum(bool(p.get('synthetic')) for p in texts),
+            'automatic_compactions': sum(p.get('type') == 'compaction'
+                                         for m in users for p in m.get('parts', []))}
+
+
+def external_file_accesses(parts, workspace):
+    """Include relative traversal as well as absolute paths in isolation checks."""
+    workspace = Path(workspace).resolve()
+    outside = []
+    for part in parts:
+        if part.get('type') != 'tool' or part.get('tool', '').startswith('velxio_'):
+            continue
+        state = part.get('state', {})
+        if state.get('status') != 'completed':
+            continue
+        arguments = state.get('input', {})
+        for key in ('filePath', 'path'):
+            value = arguments.get(key)
+            if isinstance(value, str) and not (workspace / value).resolve().is_relative_to(workspace):
+                outside.append(arguments)
+                break
+    return outside
+
+
 def initial_document(case, catalog):
     if case == 'V1':
         from app.mcp.compact.examples import instantiate
@@ -297,9 +328,7 @@ async def main(args):
                                 messages = [{'info':json.loads(data),'parts':[json.loads(p[0]) for p in connection.execute('select data from part where message_id=? order by time_created',(mid,))]}
                                             for mid,data in connection.execute('select id,data from message where session_id=? order by time_created',(adapter.session_id,))]
                         ab.write_json(directory/'session-export.json', {'messages':messages})
-                        users = [m for m in messages if m.get('info', {}).get('role')=='user']
-                        parts = [p['text'] for m in users for p in m.get('parts',[]) if p.get('type')=='text']
-                        proof = {'single_exact_prompt':len(users)==1 and parts==[prompt],
+                        proof = {**prompt_proof(messages, prompt),
                                  'models':sorted({m['info'].get('modelID') for m in messages if m['info'].get('role')=='assistant'}),
                                  'providers':sorted({m['info'].get('providerID') for m in messages if m['info'].get('role')=='assistant'}),
                                  'cwd_verified':all(m['info'].get('path',{}).get('cwd')==str(session.workspace.work.resolve()) for m in messages if m['info'].get('role')=='assistant'),
@@ -319,15 +348,15 @@ async def main(args):
                            'revision':session.workspace.revision,'proof':proof,'strict_success':False,'manual_review_required':True,
                            'conclusion':session.messages[-1] if session.messages else None,'turns':session.turns}
                     row['code_revision'] = revision
+                    row['failed_builds'] = len({c['output'].get('build_id', 'response-'+str(index))
+                                               for index,c in enumerate(calls)
+                                               if c['name']=='build_project' and c['output'].get('success') is False})
                     parts = [p for m in messages for p in m.get('parts', [])] if adapter else []
                     row['harness_tool_errors'] = sum(p.get('type')=='tool' and p.get('state',{}).get('status')=='error' for p in parts)
                     row['generation_limits'] = sum(m.get('info',{}).get('finish')=='length' for m in messages) if adapter else 0
                     row['file_tool_calls'] = sum(p.get('type')=='tool' and not p.get('tool','').startswith('velxio_') for p in parts)
                     row['recipe_calls'] = [c['arguments'] for c in calls if c['name']=='save_project' and 'from_example' in c['arguments']]
-                    row['external_file_accesses'] = [p['state']['input'] for p in parts if p.get('type')=='tool' and not p.get('tool','').startswith('velxio_')
-                        and p.get('state',{}).get('status')=='completed' and any(isinstance(p.get('state',{}).get('input',{}).get(key),str)
-                            and Path(p['state']['input'][key]).is_absolute() and not Path(p['state']['input'][key]).resolve().is_relative_to(session.workspace.work.resolve())
-                            for key in ('filePath','path'))]
+                    row['external_file_accesses'] = external_file_accesses(parts, session.workspace.work)
                     if spec and spec.get('preserve'):
                         current_files={f['name']:f['content'] for files in document['fileGroups'].values() for f in files}
                         original_files={f['name']:f['content'] for files in initial['fileGroups'].values() for f in files}
