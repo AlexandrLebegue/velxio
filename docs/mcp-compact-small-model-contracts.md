@@ -1,5 +1,36 @@
 # Compact MCP: small-model authoring contracts
 
+## Plain sketch text
+
+`save_project(sketch=source, board="arduino-uno")` creates a native Arduino
+project without asking the client to construct a JSON document. `board` defaults
+to Uno; `libraries` optionally declares dependencies. `sketch` is the actual
+source string: normal MCP JSON-RPC serialization still applies once, but there
+is no nested JSON document or additional escaping layer.
+
+The server preserves UTF-8 characters, double quotes, literal backslash
+sequences, LF/CRLF and trailing newlines exactly. It never unescapes or silently
+repairs source. For existing projects use `project_id`, `expected_version`,
+`sketch`, and optionally `board_id`; helpers, wiring and other file groups are
+preserved. The selected board must already be in Arduino mode. Updates retain
+the existing primary `.ino` filename and use compare-and-swap under the store lock.
+
+The response includes `board_id`, `sketch_file` and up to two `warnings` with
+`file`, `observed` and `correction`. A single-line sketch with `//` comments or
+empty character literals (`''`) is saved unchanged with a warning. Saving is
+not validation: `check_project` still rejects unusable code before a build.
+
+```python
+source = '''// A real multiline sketch
+void setup() {
+  Serial.begin(9600);
+  Serial.println("Hello, Velxio");
+}
+void loop() {}
+'''
+arguments = {"board": "arduino-uno", "sketch": source}
+```
+
 The public MCP still exposes exactly six tools: `search_catalog`, `get_reference`,
 `save_project`, `check_project`, `build_project`, and `read_artifact`.
 The compact catalog now owns the authoring improvements shared with the chat

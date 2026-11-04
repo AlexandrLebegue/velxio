@@ -16,7 +16,7 @@ from .builds import BuildService, ToolchainInventory, proof_bytes
 DESCRIPTIONS = {
     'search_catalog': 'Search IDs, names, tags, summaries and keywords. If a compound phrase has no matches, merge matching words without duplicate IDs; query_used lists the actual terms. Use next_offset for pagination, never repeat the same page. Five results by default, limit up to 50.',
     'get_reference': 'Reference by catalog ID. section=project gives a saveable native board document or a component instance_template with bare metadataId, defaults and known pinNames. Follow example_references for library APIs; read source with section=code. Boards report execution unsupported: builds do not start simulation.',
-    'save_project': 'Save a native document or allowlisted changes with CAS for updates. Get a minimal document/fragment via get_reference(section=project) first. Validation errors identify path, received and expected.',
+    'save_project': 'Save plain Arduino sketch text with sketch and optional board/libraries, without embedding source in a document. Real newlines and quotes are preserved exactly; suspicious single-line text returns warnings. Existing project updates require project_id and expected_version. Native documents and allowlisted changes remain supported.',
     'check_project': 'Check an exact version, including unusable Arduino sketches. Errors are listed first with file, observed, expected and next_action. ok means the tool returned a report, not that the sketch is valid. No electrical or functional certification.',
     'build_project': 'Start an offline build, waiting up to wait_seconds (default 20, max 60) for its final result. Claim build success only for state=done AND success=true; ok only means the tool request succeeded. Otherwise follow next_action. Read first_error before separate capped warnings. No installation or simulation.',
     'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices.',
@@ -64,9 +64,9 @@ def _save_schema_error(exc, arguments):
 
 class NamespaceStore(ProjectStore):
     """Principal isolation with ONE global quota lock and global byte accounting."""
-    def __init__(self, quota, principal):
+    def __init__(self, quota, principal, catalog=None):
         self.quota = quota
-        super().__init__(Path(quota.root) / principal, max_storage_bytes=quota.max_storage_bytes)
+        super().__init__(Path(quota.root) / principal, max_storage_bytes=quota.max_storage_bytes, catalog=catalog)
 
     @contextmanager
     def _locked(self, exclusive):
@@ -129,7 +129,7 @@ class CompactRuntime:
             libs, tools = self.inventories()
             if self.quota is None:
                 self.quota = ProjectStore(self.root)
-            store = NamespaceStore(self.quota, principal)
+            store = NamespaceStore(self.quota, principal, catalog=self.catalog)
             checker = ProjectChecker(store, self.catalog, source_root=self.source_root, inventory=libs)
             self.services[principal] = BuildService(store, checker, toolchains=tools)
         service = self.services[principal]

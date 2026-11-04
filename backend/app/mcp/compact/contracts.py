@@ -85,6 +85,10 @@ change["oneOf"] = [
     {"properties": {"op": {"const": "remove"}}, "not": {"required": ["value"]}},
 ]
 save = obj({"document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
+            "sketch": {"type": "string", "maxLength": 262144, "description": "Plain Arduino source. Supply real newlines and quotes; never JSON-encode a document or unescape the source yourself."},
+            "board": {**identifier, "description": "Sketch creation only; defaults to arduino-uno."},
+            "board_id": {**identifier, "description": "Optional existing board selected for a sketch update; defaults to the active board."},
+            "libraries": {"type": "array", "maxItems": 128, "items": identifier},
             "project_id": identifier, "expected_version": version})
 # Keep action/CAS alternatives below the object root for MCP client schemas.
 save["if"] = {"required": ["changes"]}
@@ -94,6 +98,12 @@ save["else"] = {
     "if": {"anyOf": [{"required": ["project_id"]}, {"required": ["expected_version"]}]},
     "then": {"required": ["project_id", "expected_version"]},
 }
+legacy_save_alternatives = {key: save.pop(key) for key in ('if', 'then', 'else')}
+save['if'] = {'required': ['sketch']}
+save['then'] = {'not': {'anyOf': [{'required': ['document']}, {'required': ['changes']}]},
+                'if': {'anyOf': [{'required': ['project_id']}, {'required': ['expected_version']}]},
+                'then': {'required': ['project_id', 'expected_version']}}
+save['else'] = legacy_save_alternatives
 # Per-action required/forbidden fields are enforced by BuildService.build_project.
 build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
              "board_id": identifier, "build_id": identifier,
@@ -141,6 +151,8 @@ _RESULTS = {
                           "example_references": {"type": "array", "items": identifier, "maxItems": 8},
                           "execution": obj({"supported": {"const": False}, "state": {"const": "unsupported"}, "message": string(500)}, ["supported", "state", "message"])}, ["id", "revision", "section", "data"]),
     "save_project": obj({"project_id": identifier, "version": version, "content_sha256": version,
+        "board_id": identifier, "sketch_file": string(240),
+        "warnings": {"type": "array", "maxItems": 2, "items": obj({"file": string(240), "observed": string(240), "correction": string(500)}, ["file", "observed", "correction"])},
         "project_artifact_id": identifier, "summary": string(500),
         # A future downloadable artifact, not a promised existing HTTP route.
         "download_url": {"type": ["string", "null"], "maxLength": 2048}},
