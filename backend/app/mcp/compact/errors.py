@@ -59,8 +59,6 @@ ACTIONS = {
     'not_found': 'Use an ID returned by a successful tool call. For catalog IDs, call search_catalog; for project/build/artifact IDs, use their creation response.',
     'ambiguous_id': 'Choose one explicit namespaced ID from expected and call get_reference.',
     'version_conflict': 'Reconcile the current project version before saving; use its version as expected_version. Do not repeat the stale update.',
-    'connection_duplicate': 'Remove the duplicate or self-connection from connect; reuse the existing wire, then call save_project.',
-    'pin_role_conflict': 'Choose pins with compatible roles from expected, correct connect, then call save_project.',
     'quota_exceeded': 'Reduce the requested size or release local storage through the application, then retry once; do not repeat the same oversized request.',
     'unsupported': 'Use the supported alternatives listed in expected. Do not poll or repeat an unsupported action.',
     'owner_integration_required': 'Ask the application owner to enable the offline REST build binding; do not poll or attempt installation.',
@@ -88,6 +86,12 @@ def normalize_error(result, tool=None, arguments=None):
     error['received'] = str(error['received'])[:200]
     error['expected'] = str(error['expected'])[:500]
     error['next_action'] = str(error['next_action'])[:500]
+    if tool == 'save_project' and code == 'invalid_argument' and isinstance(arguments,dict):
+        if isinstance(arguments.get('changes'),str):
+            error['next_action'] = 'Send changes as an actual array: [{"op":"set","path":"<intended native path>","value":"<intended value>"}]. Keep project_id and expected_version from the last save. For source replacement, use the short sketch text field; for construction, prefer a supported from_example with scalar parameters. Do not resend a cut JSON string.'
+        elif isinstance(arguments.get('document'),str):
+            error['next_action'] = 'document must be a complete native object, not an incomplete quoted fragment. Use a supported from_example with scalar parameters, or sketch=<plain source> for a board-only project. Never invent missing data.'
+
     return {**result, 'error': error}
 
 

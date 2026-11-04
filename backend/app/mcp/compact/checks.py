@@ -279,7 +279,7 @@ class ProjectChecker:
                 for li, name in enumerate(libraries):
                     lp = path + f"/libraries/{li}"
                     emit("dependency_declared", lp, "info", name)
-                    if name not in known_libraries:
+                    if name not in known_libraries and (inventory is None or name not in inventory["entries"]):
                         emit("dependency_name_unknown", lp, "unknown", "Library name has no declaration evidence in this catalog; not a claim that it is absent")
                         unavailable.add("dependency_catalog_coverage")
                     if inventory is None or (name not in inventory["entries"] and not inventory["complete"]):
@@ -337,13 +337,20 @@ class ProjectChecker:
         def endpoint(ep, path):
             entry, obj, _, is_board = objects[ep["componentId"]]
             pins = entry.get("pins", "unknown") if entry else "unknown"
+            for attribute, variants in (entry or {}).get('_pin_variants',{}).items():
+                variant = variants.get(str(obj.get('properties',{}).get(attribute)))
+                if variant:
+                    pins = variant['pins']
             if pins == "unknown":
                 unavailable.add("undocumented_pins")
                 emit("pins_unknown", path, "unknown", "Pin list is not documented for this object")
                 return (ep["componentId"], ep["pinName"])
-            pin = next((p for p in pins if p["name"] == ep["pinName"]), None)
+            native_name = entry.get("_pin_aliases", {}).get(ep["pinName"], ep["pinName"])
+            pin = next((p for p in pins if p["name"] == native_name), None)
             if pin is None:
-                emit("pin_invalid", path, "error", "Pin does not exist in the documented physical pin list")
+                emit('pin_invalid', path, 'error', 'Pin does not exist; valid pins: ' + ', '.join(p['name'] for p in pins),
+                     expected=('native pin name: ' + ', '.join(p['name'] for p in pins))[:240],
+                     next_action='Replace this endpoint pinName with a documented native pin, save a new version and check again.')
                 return (ep["componentId"], ep["pinName"])
             key = (ep["componentId"], str((pin["x"], pin["y"]))) if "x" in pin and "y" in pin else (ep["componentId"], pin["name"])
             gpio = is_board and (pin["name"].isdigit() or any(p["name"].isdigit() and p.get("x") == pin.get("x") and p.get("y") == pin.get("y") for p in pins))

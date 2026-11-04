@@ -230,10 +230,7 @@ class StartupInventoryTests(unittest.TestCase):
             inventory, toolchains = runtime.inventories()
             self.assertEqual(set(inventory.verify()['entries']), {'GxEPD2','Adafruit GFX Library','Adafruit BusIO'})
             self.assertEqual(toolchains.verify()['toolchains']['esp32:esp32:esp32|arduino']['idf_root'], str(root/'idf'))
-            fixture = ROOT/'review/mcp-compact-smoke-20261103/hello-epaper-esp32.vlx'
-            if not fixture.exists():
-                self.skipTest('maintainer-only review fixture is not part of the public tree')
-            project = json.loads(fixture.read_bytes())
+            project = json.loads((ROOT/'review/mcp-compact-smoke-20261103/hello-epaper-esp32.vlx').read_bytes())
             project['boards'][0]['libraries'].append('ArduinoJson')
             store = ProjectStore(root/'store')
             saved = store.save_project(document=project); self.assertTrue(saved['ok'], saved)

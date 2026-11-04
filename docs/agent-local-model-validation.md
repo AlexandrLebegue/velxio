@@ -25,9 +25,9 @@ L'e-ink reste moins fluide. La reprise effectue trois recherches distinctes au l
 
 ## Preuves et reproduction
 
-Les projets exportés sont importables séparément : LED, Nano/servo, ESP32/e-ink.
+Les projets exportés sont importables séparément : [LED](/tmp/velxio-qwen-validation/backend-artifacts/blink/project.vlx), [Nano/servo](/tmp/velxio-qwen-validation/backend-artifacts/servo-nano/project.vlx), [ESP32/e-ink](/tmp/velxio-qwen-validation/backend-replay/eink-esp32/project.vlx).
 
-Les rapports conservent les demandes, sources, appels d'outils, diagnostics et empreintes : LED, servo, e-ink après reprise, comparaison ESP32. La première tentative ESP32 en échec est conservée séparément dans `backend-artifacts/eink-esp32`.
+Les rapports conservent les demandes, sources, appels d'outils, diagnostics et empreintes : [LED](/tmp/velxio-qwen-validation/backend-artifacts/blink/report.json), [servo](/tmp/velxio-qwen-validation/backend-artifacts/servo-nano/report.json), [e-ink après reprise](/tmp/velxio-qwen-validation/backend-replay/eink-esp32/report.json), [comparaison ESP32](/tmp/velxio-qwen-validation/backend-replay/eink-esp32/firmware-comparison.json). La première tentative ESP32 en échec est conservée séparément dans `backend-artifacts/eink-esp32`.
 
 Le script réutilisable est [test-agent-backend-local.py](../scripts/test-agent-backend-local.py). Les paramètres et prérequis sont décrits dans [agent-connectable.md](agent-connectable.md#évaluation-backend-avec-un-modèle-local-réel). Toolchain utilisée : Arduino CLI 1.5.1, AVR 1.8.6, ESP32 2.0.17, Servo 1.3.0, GxEPD2 1.6.9, Adafruit GFX 1.13.0 et BusIO 1.17.4. L'ESP32 passe par le fallback Arduino CLI ; le compilateur ESP-IDF dédié n'est pas installé ici.
 

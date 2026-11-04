@@ -69,7 +69,7 @@ class ToolchainInventory(LibraryInventory):
                     fail("preflight_unknown", "Toolchain member hash/size differs")
             toolchains[name] = {"version": doc["version"], "manifest_sha256": entry["sha256"], "members": members,
                                 "test_only": doc.get("test_only") is True, "inventory_root": self.root}
-            for field in ('idf_root', 'arduino_root', 'managed_components'):
+            for field in ('idf_root', 'arduino_root', 'managed_components', 'avr'):
                 if field in doc:
                     toolchains[name][field] = copy.deepcopy(doc[field])
             if 'arduino_core' in doc:
@@ -258,7 +258,8 @@ class BuildService:
         return request, provenance
 
     async def build_project(self, **arguments):
-        arguments = dict(arguments)
+        from .arguments import normalize
+        arguments = normalize('build_project', arguments)
         has_wait = 'wait_seconds' in arguments
         wait_seconds = arguments.pop('wait_seconds', 20)
         if (type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60
@@ -267,6 +268,10 @@ class BuildService:
         deadline = asyncio.get_running_loop().time() + wait_seconds
         def operation():
             action = arguments.get("action")
+            if action == 'start' and set(arguments) == {'action','project_id','version'}:
+                with self.store._locked(False) as root:
+                    snapshot = self.store._load_version(root,arguments['project_id'],arguments['version'])
+                arguments['board_id'] = snapshot['activeBoardId']
             if action == "status" and set(arguments) == {"action", "build_id"}:
                 self._ensure_owner()
                 with self.store._locked(False) as root:

@@ -29,6 +29,8 @@ const defaults: AgentSettings = {
   base_url: 'http://127.0.0.1:11434/v1',
   model: '',
   max_steps: 20,
+  max_output_tokens: 8192,
+  context_window: 65536,
   timeout_seconds: 300,
 };
 export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) => void } = {}) {

@@ -84,7 +84,7 @@ change["oneOf"] = [
     {"properties": {"op": {"const": "set"}}, "required": ["value"]},
     {"properties": {"op": {"const": "remove"}}, "not": {"required": ["value"]}},
 ]
-save = obj({"connect": {"type": "array", "minItems": 1, "maxItems": 128, "items": string(512), "description": "Named connections, e.g. board.5 -> epd.CS. Appends native wires atomically; board aliases the active board. May accompany creation or update alone with project_id/expected_version."}, "document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
+save = obj({"document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
             "sketch": {"type": "string", "maxLength": 262144, "description": "Plain Arduino source. Supply real newlines and quotes; never JSON-encode a document or unescape the source yourself."},
             "board": {**identifier, "description": "Sketch creation only; defaults to arduino-uno."},
             "board_id": {**identifier, "description": "Optional existing board selected for a sketch update; defaults to the active board."},
@@ -110,7 +110,6 @@ text_save_alternatives = {key: save.pop(key) for key in ('if', 'then', 'else')}
 save['if'] = {'required': ['from_example']}
 save['then'] = {'not': {'anyOf': [{'required': [key]} for key in ('document', 'changes', 'sketch', 'project_id', 'expected_version', 'board', 'board_id', 'libraries')]}}
 save['else'] = text_save_alternatives
-save['else'] = {'if': {'required': ['connect'], 'not': {'anyOf': [{'required': [key]} for key in ('document', 'changes', 'sketch')]}}, 'then': {'required': ['project_id', 'expected_version']}, 'else': save['else']}
 # Per-action required/forbidden fields are enforced by BuildService.build_project.
 build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
              "board_id": identifier, "build_id": identifier,
@@ -248,3 +247,13 @@ TOOL_SCHEMAS = {name: {"name": name, "inputSchema": deepcopy(schema),
                        "outputSchema": output_schema(name),
                        "implemented": True}
                 for name, schema in _INPUTS.items()}
+
+
+def model_input_schema(name):
+    """Small discovery schema; authoritative native validation remains unchanged."""
+    schema = deepcopy(TOOL_SCHEMAS[name]['inputSchema'])
+    if name == 'save_project':
+        properties = schema['properties']
+        properties['document'] = {'type':'object', 'description':'Complete native snapshot from get_reference(section=project). Validated in full by the server.'}
+        schema['properties'] = {key:properties[key] for key in ('from_example','parameters','sketch','board','libraries','project_id','expected_version','board_id','changes','document')}
+    return schema

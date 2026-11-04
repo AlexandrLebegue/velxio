@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from app.mcp.compact.catalog import Catalog
+from app.mcp.compact.errors import normalize_error
 from .opencode import OpenCodeAdapter
 from .settings import AgentError, ConnectionSettings, SettingsStore, private_json
 from .workspace import Workspace, checked_document, project_revision
@@ -41,6 +42,10 @@ class Session:
     stream_id: str = ""
     pending: dict = field(default_factory=dict)
     requests: dict = field(default_factory=dict)
+    project_service: Any = None
+    compile_request: Any = None
+    compile_user: Any = None
+    tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -86,9 +91,27 @@ class AgentRuntime:
             return ESP32_RUN_UNSUPPORTED
         return None
 
+    def source_context(self, session):
+        document = session.workspace.document
+        board = next((b for b in document['boards'] if b['id'] == document['activeBoardId']), {})
+        paths = [f"{session.workspace.groups[group]}/{file['name']}"
+                 for group, files in document['fileGroups'].items() for file in files]
+        group = session.workspace.groups.get(board.get('activeFileGroupId'))
+        files = document['fileGroups'].get(board.get('activeFileGroupId'), [])
+        primary = next((f for f in files if f['name'].endswith('.ino')), files[0] if files else None)
+        return {'cwd': str(session.workspace.work.resolve()), 'files': paths[:16], 'files_truncated': len(paths) > 16,
+                'active_file': f"{group}/{primary['name']}" if group and primary else None,
+                'project_selection': 'This conversation already selects the project. Omit project_id and version.'}
+
     async def project_context(self, session):
         value = session.workspace.capture()
+        from app.mcp.compact.examples import RECIPES, recipe_metadata
+        starters = [{'id': key, 'name': self.get_catalog()._entries[key]['name'],
+                     'parameters': recipe_metadata(key)['parameters']}
+                    for key in RECIPES if key in self.get_catalog()._entries]
         result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
+                  "workspace": self.source_context(session),
+                  "starter_examples": starters,
                   "boards": value["boards"], "components": value["components"], "wires": value["wires"],
                   "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()},
                   "capabilities": {"change_board": True, "create_board": "Any board listed by search_catalog(kind=board), in an empty workspace",
@@ -236,29 +259,24 @@ class AgentRuntime:
                 self.emit(session, "turn.phase", {"phase": "working"})
                 context = await self.project_context(session)
                 system = (
-                    "You are the Velxio electronics coding agent. Work only on the active project. "
-                    "Use your existing file tools to edit source files in the group directories. "
-                    "Use velxio MCP tools to inspect the circuit, search real component pins, change wiring, run and observe. "
-                    "Never use shell commands, install dependencies or invent a successful simulation. "
-                    "ESP32 simulation is unsupported by this MCP agent bridge: report that immediately, without calling or polling run_project. Compilation is available separately through the six-tool compact MCP build_project contract. "
-                    "For supported boards, after editing code call run_project, then observe_project to inspect serial output. "
-                    "If run_project or observe_project returns starting/booting with confirmed=false, the engine is still starting: call observe_project with duration_ms=15000, without rebuilding or restarting. A completed script is a successful terminal state. Report engine/toolchain/access errors directly; repeated reference reads cannot fix an unavailable runtime. "
-                    "Report compilation, simulation startup and functional observations separately. "
-                    "A revision conflict means preserve the user's manual edits and explain it. "
-                    "The current project, its real pinouts, file paths and capabilities are supplied below; act on them directly. "
-                    "Do not re-read known component references or project state. For a new part, get_reference once with section=overview supplies pins, defaults and attributes together. "
-                    "Read example code only when you need a library API or protocol detail. Once enough information is available, edit, run and observe. "
-                    "Use add_component for new parts: it supplies defaults, an instance ID, pins and example guidance. Do not re-read its reference. "
-                    "Connect all planned wires in one connect_pins(connections=[...]) call; IDs and geometry are generated for you. "
-                    "References provide examples and recommended_example with real IDs, board targets and libraries: read the recommended ID with section=code when you need an API. "
-                    "An example for a different board requires pin adaptation; never invent example IDs. If a lookup fails, use its suggestions. "
-                    "Keep file searches inside the project; installed library headers are outside this workspace. "
-                    "Catalog IDs (component:led) identify references; project metadataId uses the bare key (led). "
-                    "Reserve update_circuit for advanced edits; component additions and connections have dedicated tools. "
-                    "To replace a board use change_board; preserve its ID and source files, pass pin_map for incompatible pins. Do not recreate or discard an existing project. "
-                    "Reply in the user's language. Group mapping: " + json.dumps(session.workspace.groups) +
-                    ". Active project: " + json.dumps(context, ensure_ascii=False) +
-                    ". Previous conversation (context after a reconnect): " + json.dumps(session.messages[-8:-1], ensure_ascii=False)
+                    "You are the Velxio electronics agent. Work on the project in this conversation. "
+                    "Your actual cwd, exact source paths and active_file are in workspace below. Read/edit those paths directly; no project ID or directory search is needed. "
+                    "Available starter_examples and their exact parameters are supplied below. For a complete new circuit, use a suitable one directly with save_project(from_example=...,parameters=...). No catalog search or reference read is needed for those advertised parameters. "
+                    "For a missing capability, search_catalog(kind=example,query=<short keyword>) or inspect a specific new component. Always send query explicitly when searching. "
+                    "Supported examples generate consistent code, native wires and libraries. Use advertised scalar parameters; do not rewrite or re-read generated code unless a specific detail is missing. "
+                    "When generated_behavior is returned, compare its values with the user's request and correct any mismatch before building. It describes generated code, not runtime observations. "
+                    "Existing user code/circuit must be preserved when making a local change: use file edit tools, add_component, connect_pins, set_component_properties or change_board. "
+                    "A component addition returns its real pins and defaults; connect all planned native wires in one connect_pins(connections=[...]) call. Read a new component's reference only once when needed. "
+                    "After editing, check_project() then build_project(). These automatically capture current files and select the project/version. Omit project_id, version and expected_version. save_project() also captures current file edits. "
+                    "Only state=done AND success=true proves compilation. Follow next_action if running; fix reported errors without repeating unchanged failed calls. "
+                    "matches_current_workspace=false means the build belongs to older source; never report it as a build of current files. "
+                    "When execution is requested, run_project on a supported board then observe_project. Starting/booting with confirmed=false is pending: observe without restarting. "
+                    "ESP32 simulation is unsupported: use build_project for compilation only, never call or poll ESP32 run_project. "
+                    "Report saved/applied, compilation, simulation startup and observed behavior separately. Compilation does not prove blinking, movement or display output. "
+                    "On a revision conflict preserve manual edits and stop; never overwrite them by retrying stale changes. "
+                    "Catalog reference IDs are component:, board: or example: IDs; they never identify the current project. Do not invent IDs. Never run shell commands or install dependencies. "
+                    "Reply in the user's language. Current project: " + json.dumps(context, ensure_ascii=False) +
+                    ". Previous conversation after reconnect: " + json.dumps(session.messages[-8:-1], ensure_ascii=False)
                 )
                 await session.adapter.prompt(message, system)
                 await done
@@ -347,7 +365,8 @@ class AgentRuntime:
                         state = part.get("state", {})
                         title = str(state.get("title", part.get("tool"))).replace(str(session.workspace.work) + "/", "")
                         title = title.replace(str(session.workspace.work).lstrip("/") + "/", "")
-                        self.emit(session, "tool.state", {"call_id": part.get("callID") or part_id, "part_id": part_id, "message_id": part.get("messageID"), "name": part.get("tool"), "status": state.get("status", "pending"), "title": title[:300], "summary": str(state.get("error") or state.get("output") or "")[-2000:]})
+                        summary = str(state.get("error") or state.get("output") or "").replace(str(session.workspace.work) + '/', '')
+                        self.emit(session, "tool.state", {"call_id": part.get("callID") or part_id, "part_id": part_id, "message_id": part.get("messageID"), "name": part.get("tool"), "status": state.get("status", "pending"), "title": title[:300], "summary": summary[-2000:]})
                     elif (part.get("type") == "tool" and part.get("tool") == "velxio_run_project"
                           and part.get("state", {}).get("status") == "pending" and self.execution_refusal(session)):
                         # A provider may never finish streaming even the empty
@@ -387,9 +406,16 @@ class AgentRuntime:
         call_id = secrets.token_hex(12)
         self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "running"})
         try:
-            result = await self._call_tool(session, name, args)
-            summary = {key: result[key] for key in ("state", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
-            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if result.get("ok") is False else "completed", "result_state": result.get("state"), "confirmed": result.get("confirmed"), "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
+            if name in ('search_catalog', 'get_reference', 'read_artifact', 'observe_project', 'stop_project'):
+                result = await self._call_tool(session, name, args)
+            else:
+                async with session.tool_lock:
+                    result = await self._call_tool(session, name, args)
+            result = normalize_error(result, name, args)
+            summary = {key: result[key] for key in ("state", "success", "first_error", "diagnostic_summary", "structure_status", "generated_behavior", "matches_current_workspace", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
+            failed = (result.get('ok') is False or result.get('success') is False or
+                      result.get('state') in ('error', 'interrupted') or result.get('structure_status') == 'invalid')
+            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if failed else "completed", "result_state": result.get("state"), "confirmed": result.get("confirmed"), "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
             return result
         except asyncio.CancelledError:
             self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "cancelled"})
@@ -424,7 +450,17 @@ class AgentRuntime:
 
     async def _call_tool(self, session, name, args):
         try:
+            if name in ('save_project', 'check_project', 'build_project', 'read_artifact'):
+                if session.project_service is None:
+                    from .project_service import ChatProjectService
+                    session.project_service = ChatProjectService(self, session)
+                return await session.project_service.call(name, args)
             if name in ("search_catalog", "get_reference"):
+                if name == 'get_reference' and args.get('id', '').startswith('p_'):
+                    return {'ok': False, 'error': {'code': 'invalid_argument', 'path': '/id',
+                            'received': args['id'], 'expected': 'A catalog component:, board: or example: ID',
+                            'message': 'The conversation already selects your project.',
+                            'next_action': 'Call get_project() for current state, or read workspace.active_file directly. No project ID is needed.'}}
                 result = getattr(self.get_catalog(), name)(**args)
                 if name == "get_reference" and not result.get("ok") and result.get("error", {}).get("code") == "not_found":
                     result["error"]["suggestions"] = self.get_catalog().suggest_references(args.get("id", ""))
@@ -592,7 +628,7 @@ class AgentRuntime:
                 return await self.browser_command(session, "stop")
             raise AgentError("unknown_tool", "Unknown Velxio tool")
         except (AgentError, ValueError, KeyError) as exc:
-            return {"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"), "message": str(exc)[:1000]}}
+            return {"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"), "message": str(exc)[:1000], **getattr(exc, 'details', {})}}
 
     async def stop(self, session):
         if session.busy:
@@ -605,6 +641,8 @@ class AgentRuntime:
             await self.stop(session)
             if session.adapter:
                 await session.adapter.close()
+            if session.project_service:
+                await session.project_service.close()
 
 
 async def test_connection(settings: ConnectionSettings):

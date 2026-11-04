@@ -37,11 +37,13 @@ class Catalog:
         if snapshot.get("schema_version") != 1:
             raise CatalogError("invalid_catalog", "Unsupported catalog schema")
         self.revision = snapshot["revision"]
-        self._entries = {e["id"]: e for e in self._snapshot["entries"]}
+        self._entries = {e["id"]: copy.deepcopy(e) for e in self._snapshot["entries"]}
         if len(self._entries) != len(snapshot["entries"]):
             raise CatalogError("invalid_catalog", "Duplicate catalog IDs")
         if not isinstance(self.revision, str) or len(self.revision) != 64:
             raise CatalogError("invalid_catalog", "Missing catalog revision")
+        from .pin_reference import enrich
+        self.revision = enrich(self._entries, self.revision, self._snapshot.get("inputs",[]))
         self._aliases = {}
         for entry in self._entries.values():
             for alias in [entry["key"], *entry.get("aliases", [])]:
@@ -104,7 +106,8 @@ class Catalog:
                 return re.sub(r"[-_\s]+", "", value.casefold())
             normalized = normalize(query)
             indexed = [(e, [normalize(field) for field in [e["id"], e["name"], e["summary"],
-                        *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", [])]])
+                        *e.get("aliases", []), *e.get("tags", []), *e.get("keywords", []),
+                        *([json.dumps(recipe_metadata(e["id"]), ensure_ascii=True)] if e["kind"]=="example" else [])]])
                        for e in self._entries.values() if kind == "all" or e["kind"] == kind]
             matches = [e for e, fields in indexed if any(normalized in field for field in fields)]
             matches.sort(key=lambda e: e["id"])
@@ -226,7 +229,7 @@ class Catalog:
             instance_id = "esp" if entry["key"] == "esp32" else entry["key"] + "-1"
             return {"format": "velxio-project", "version": 1,
                     "boards": [{"id": instance_id, "boardKind": entry["key"], "x": 0, "y": 0,
-                                "activeFileGroupId": "sketch", "languageMode": mode}],
+                                "activeFileGroupId": "sketch", "languageMode": mode, "libraries": []}],
                     "fileGroups": {"sketch": [{"name": "main.py" if mode == "micropython" else "sketch.ino", "content": ""}]},
                     "components": [], "wires": [], "activeBoardId": instance_id}
         if entry["kind"] == "component":

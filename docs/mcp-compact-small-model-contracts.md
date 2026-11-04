@@ -293,38 +293,12 @@ reference read is unnecessary. The checked-in JSON includes both `baseline` and
 `scenarios`. These remain controlled contract tests with no real model,
 compiler, deployment or network dependency installation.
 
-### Named wiring (milestone 4e)
+### Native wiring
 
-Keep the six tools: `connect` is a `save_project` field, not another tool.
-Pass up to 128 strings such as `board.GPIO5 -> epd.CS` in the same save as a
-native document, plain sketch or example, or append a batch using only
-`project_id`, `expected_version` and `connect`. `board` selects the active board;
-other names are exact instance IDs (the longest matching ID wins). A native
-wire ID is generated; the saved document contains native instance IDs and pin
-names. The operation is atomic and retains compare-and-swap semantics.
-
-Pin lookup ignores case and accepts GPIO5/D5, GROUND, 3.3V/3V3, component
-CLK/SCLK, DIN/MOSI/SDA, RES/RESET, VDD, ANODE/CATHODE and servo SIG/SIGNAL/VCC.
-Uno/Nano SCK/MOSI/MISO/SDA/SCL resolve to their fixed board pins. Exact native
-names take priority. ESP32 RX2/16 and TX2/17 are compared as physical pins.
-Catalog pins are authoritative; explicit native profiles cover Uno, Nano, LED,
-resistor and servo where the packaged catalog lacks pins. Other undocumented
-parts fail with a request for pin documentation, never a guessed pin count.
-
-Nonexistent pins, self-connections, reverse/alias duplicates, power/ground/signal
-conflicts, input-only GPIOs driving inputs, and two e-paper signal roles on one
-net fail before publication. Errors identify the connection and list valid
-pins. Existing wires participate in duplicate and net validation. These are
-conservative structural role checks, not voltage, timing or electrical proof.
-
-The deterministic report now also exercises named wiring on LED/Uno,
-servo/Nano and e-paper/ESP32: 8, 7 and 8 calls respectively, the same as native
-manual authoring, with zero unexpected errors or repeated calls. The preferred
-example path remains 5 calls per scenario (previous optimized result: 5 each).
-No real model, compiler or simulator is executed.
-
-Validation for milestone 4e: `test_agent.py` — 31 tests OK;
-`test_mcp_compact*.py` — 161 tests OK, including five named-wiring tests.
+Wires use native `start` and `end` endpoints containing `componentId` and
+`pinName`. Copy these from the native templates or reviewed examples. Updates
+use the native document or versioned changes; no `connect` argument is exposed.
+ESP32 e-paper examples retain CS=5, DC=17, RST=16, BUSY=4, SCK=18 and SDI=23.
 
 ### Uniform errors (milestone 4g)
 
@@ -349,7 +323,7 @@ e-paper/ESP32, with zero errors or repeated calls. A separate recovery probe
 uses one out-of-range pin, verifies the uniform error and exact parameter path,
 then corrects it once: 6 calls, 1 expected error, 0 unexpected errors and 0
 repeated calls per scenario. This measures the scripted recovery contract,
-not the reasoning behavior of a real model. Native and named manual authoring
+not the reasoning behavior of a real model. Native manual authoring
 remain 8/7/8 calls. All compiler output remains an explicit controlled double.
 
 Validation for milestone 4g: `test_agent.py` — 31 tests OK;
@@ -400,11 +374,11 @@ recipe for project creation. Oversized duplicate outer metadata is listed in
 (and example metadata through `overview`). Error paths are capped at 512
 characters with `path_truncated=true` when necessary, keeping errors bounded.
 
-| Scenario | Previous optimized calls | Current optimized calls | Manual native / named | Forced two-unit reference pages |
+| Scenario | Previous optimized calls | Current optimized calls | Manual native | Forced two-unit reference pages |
 | --- | ---: | ---: | ---: | ---: |
-| LED / Uno | 5 | 5 | 8 / 8 | 15 |
-| Servo / Nano | 5 | 5 | 7 / 7 | 12 |
-| E-paper / ESP32 | 5 | 5 | 8 / 8 | 13 |
+| LED / Uno | 5 | 5 | 8 | 15 |
+| Servo / Nano | 5 | 5 | 7 | 12 |
+| E-paper / ESP32 | 5 | 5 | 8 | 13 |
 
 All paths finish with zero unexpected errors, repeated identical calls or build
 status polls. Forced paging adds 7/5/5 continuation calls, and produces the same
@@ -418,3 +392,47 @@ Final validation for milestone 4h: `test_agent.py` — **31 tests OK**;
 `test_mcp_compact*.py` — **173 tests OK**, including eight pagination regressions.
 The scenario regression reproduces the checked-in JSON report exactly. Tests
 use temporary isolated stores and controlled compiler adapters only.
+
+## Native authoring and scalar peripheral variants
+
+The discovery schema is compact; full native document validation remains on the
+server. Complete JSON-encoded document/changes/parameter containers and numeric
+strings are accepted without modifying source strings. Incomplete structures
+are refused. For build start, an omitted board_id selects the exact version's
+active board; a terminal successful result is still required.
+
+Native pad names are extracted from the installed web components and packaged
+with hashes, including the editor's native endpoint aliases and selectable pin
+variants. Unknown components remain unknown. The 8-pin SPI SSD1306 and native
+4-pin I2C SSD1306 are distinct components. No named connection command exists.
+
+Reviewed example parameters expose ordinary reusable behaviors: LED resistance
+and color; button momentary/toggle with debouncing; servo sweep/fixed angle or
+analog potentiometer control; numeric sensor readouts on serial/LCD/OLED with
+optional threshold LED/buzzer outputs. Source and native wiring are generated
+together, including required libraries. Parameter schemas are returned by
+search/reference. E-paper's optional align=center uses actual font metrics on
+both supported boards. Default ESP32 e-paper control and SPI pins are preserved.
+
+AVR builds require an explicit owner opt-in and a real installed-cache inventory.
+The compile runs inside the genuine REST admission lane, using closed verified
+library sources; no core/library installation occurs during compilation. Existing
+ESP32 IDF admission and verification are retained, with no AVR fallback for ESP32.
+
+## Explicit blink units and centered display fidelity
+
+Blink from_example accepts frequency_hz for a full on/off cycle rate. Existing
+delay_ms remains the duration of each individual phase, so a full cycle lasts
+twice that duration. Supplying both options is rejected. Frequency is converted
+to the nearest whole-millisecond phase; example_provenance.generated_behavior
+reports on_ms, off_ms, cycle_ms and the nominal generated frequency. This is
+source-derived metadata, never a claim of measured LED timing.
+
+The same metadata and parameter schema are used by the integrated chat. A
+compile-successful but wrong-rate model answer was caught by independent source
+review; concise parameter names alone were insufficient to establish fidelity.
+
+For align=center, e-paper recipes remove the catalog demonstration's additional
+ePaper/OK! strings, leaving only the requested centered text (and optional frame).
+Default mode, Uno/ESP32 native pins and the offline ESP32 path are retained.
+Unit tests verify generated source and wiring; no rendered display is certified.

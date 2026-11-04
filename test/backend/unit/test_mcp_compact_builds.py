@@ -116,7 +116,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         status = {'action':'status', 'build_id':'b_'+'1'*32}
         cases = [{}, {'action':'start'}, {'action':'status'},
                  *[{k:v for k,v in start.items() if k != missing}
-                   for missing in ('project_id','version','board_id')],
+                   for missing in ('project_id','version')],
                  {**start, 'build_id':status['build_id']},
                  *[{**status, key:start[key]} for key in ('project_id','version','board_id')]]
         for arguments in cases:
@@ -186,7 +186,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
     async def test_wait_validation_bounds_and_default_do_not_change_build_identity(self):
         saved = self.save()
         args = dict(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp')
-        for value in (-1, 61, True, float('nan'), float('inf'), '20'):
+        for value in (-1, 61, True, float('nan'), float('inf'), 'twenty'):
             result = await self.service.build_project(**args, wait_seconds=value)
             self.assertEqual(result['error']['code'], 'invalid_argument')
         self.assertEqual(self.requests, [])

@@ -101,7 +101,12 @@ async def sync_workspace(sid: str, body: ProjectBody, principal=Depends(owner)):
 async def send_message(sid: str, body: MessageBody, request: Request, principal=Depends(owner)):
     server_port = (request.scope.get("server") or ("127.0.0.1", 8001))[1]
     callback = os.environ.get("VELXIO_AGENT_CALLBACK_URL", f"http://127.0.0.1:{server_port}/api/agent/tools/mcp")
-    return await runtime.start_turn(runtime.get(principal, sid), body.message, body.request_id, callback)
+    session = runtime.get(principal, sid)
+    # Preserve the real authenticated owner context for the shared compiler
+    # admission lane. A model-supplied ID or MCP callback token cannot replace it.
+    session.compile_request = request
+    session.compile_user = await get_current_user_id(request)
+    return await runtime.start_turn(session, body.message, body.request_id, callback)
 
 
 @router.post("/sessions/{sid}/stop")
