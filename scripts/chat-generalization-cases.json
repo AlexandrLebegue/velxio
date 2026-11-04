@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "purpose": "Frozen held-out requirements: no new application recipes, prompt rules or solution code are supplied to the agent.",
+  "cases": {
+    "G1": {
+      "prompt": "Make an Arduino Uno project with one red and one green external LED, each with its own 330-ohm series resistor. Repeat this sequence: red on for 150 ms, both off for 850 ms, green on for 150 ms, both off for 850 ms. The LEDs must never be on together. Save the wired project, compile it and tell me the actual result.",
+      "expected": {"board": "arduino-uno", "component_counts": {"led": 2, "resistor": 2}, "resistance_ohms": 330, "behavior": "red 150 ms, dark 850 ms, green 150 ms, dark 850 ms; mutually exclusive outputs"}
+    },
+    "G2": {
+      "prompt": "Use an Arduino Nano, a servo and two pushbuttons. Start the servo at 90 degrees. Each new press of one button adds 10 degrees and the other subtracts 10 degrees, staying between 20 and 160 degrees. Holding a button must cause only one change; include simple debouncing. Save the complete wired project, compile it and report the real result.",
+      "expected": {"board": "arduino-nano", "component_counts": {"servo": 1, "pushbutton": 2}, "behavior": "initial 90; press-edge +/-10; saturate 20..160; holding and contact bounce do not repeat"}
+    },
+    "G3": {
+      "prompt": "Build an Arduino Uno with a common-anode RGB LED, a potentiometer and a pushbutton, using a separate 220-ohm series resistor for each color channel. At the minimum knob position show blue, at the maximum show red, and halfway show purple; keep the green channel off. Each debounced button press should toggle between this gradient and all colors off, without repeating while held. Start with the gradient enabled. Save and compile the wired project and report what actually worked.",
+      "expected": {"board": "arduino-uno", "component_counts": {"rgb-led": 1, "resistor": 3, "potentiometer": 1, "pushbutton": 1}, "resistance_ohms": 220, "behavior": "common anode; blue-to-red gradient with equal red/blue midpoint, green off; debounced latched enable toggle"}
+    },
+    "G4": {
+      "prompt": "Make an Arduino Uno parking indicator with an HC-SR04, red, yellow and green LEDs each with a 220-ohm series resistor, and a passive buzzer. Show green above 50 cm, yellow from 20 through 50 cm, and red below 20 cm. Below 20 cm sound a repeating 200 ms beep followed by 800 ms of silence; otherwise keep the buzzer silent. Distance changes must update the LEDs within 250 ms even during a beep. Save and compile the complete wired project and report the result.",
+      "expected": {"board": "arduino-uno", "component_counts": {"hc-sr04": 1, "led": 3, "resistor": 3, "buzzer": 1}, "resistance_ohms": 220, "behavior": "three distance zones; 200/800 ms buzzer envelope only below20; LED response <=250 ms without blocking during beeps"}
+    },
+    "G5": {
+      "prompt": "Create an Arduino Uno motion alarm with a PIR sensor, a reset pushbutton, a passive buzzer and red and green LEDs, each LED with a 330-ohm series resistor. Green means idle. Once motion is detected, latch the alarm with red on and a continuous tone, even after motion stops. Only a new button press after motion has stopped may clear it; an earlier press while motion was present must be ignored. After reset it must detect motion again. Save the wired project, compile it and report what succeeded.",
+      "expected": {"board": "arduino-uno", "component_counts": {"pir-motion-sensor": 1, "pushbutton": 1, "buzzer": 1, "led": 2, "resistor": 2}, "resistance_ohms": 330, "behavior": "PIR-triggered latched alarm; ignore reset edges during motion; require a fresh press after motion stops; rearm after reset"}
+    },
+    "G6": {
+      "prompt": "In this existing Arduino Nano project, add a three-bit counter using red, yellow and green LEDs for bits 1, 2 and 4, each with a 220-ohm series resistor. Count from 0 to 7 and wrap to 0, advancing once per second. A pushbutton should reset the counter immediately once per press; counting must continue even if that button stays held. Preserve user_hook.h byte-for-byte and keep its call in setup. Save the wired project, compile it and tell me the actual result.",
+      "initial": {
+        "board": "arduino-nano",
+        "files": [
+          {"name": "sketch.ino", "content": "#include \"user_hook.h\"\nvoid setup() { Serial.begin(9600); userHook(); }\nvoid loop() {}\n"},
+          {"name": "user_hook.h", "content": "#pragma once\n#include <Arduino.h>\ninline void userHook() { Serial.println(\"USER_CODE_KEEP\"); }\n"}
+        ]
+      },
+      "preserve": {"files": ["user_hook.h"], "source_tokens": ["userHook();"]},
+      "expected": {"board": "arduino-nano", "component_counts": {"led": 3, "resistor": 3, "pushbutton": 1}, "resistance_ohms": 220, "behavior": "binary 0..7 once per second; reset on press edge without stopping while held; retain unrelated header and callback"}
+    }
+  }
+}

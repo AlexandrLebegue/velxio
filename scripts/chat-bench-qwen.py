@@ -123,8 +123,8 @@ async def editor_stream(client, sid, browser_id, editor, directory, ready):
             if event['type'] == 'browser.command':
                 try:
                     result = editor.command(event['payload'])
-                except ValueError as exc:
-                    result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'invalid_argument'), 'message': str(exc)}}
+                except (ValueError, KeyError, TypeError) as exc:
+                    result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'adapter_error'), 'message': str(exc)}}
                 acknowledged = await client.post(f'/api/agent/sessions/{sid}/browser-result', json={
                     'command_id': event['payload']['command_id'], 'browser_id': browser_id, 'result': result})
                 acknowledged.raise_for_status()
@@ -143,14 +143,35 @@ def independent(document, directory, cli, cache):
     return result.returncode == 0 and (directory / 'independent/build/sketch.ino.hex').is_file()
 
 
+def suite_document(spec, catalog):
+    """Only user-owned initial files, never a generated answer to the task."""
+    if 'initial' not in spec:
+        return initial_document('', catalog)
+    initial = spec['initial']
+    document = copy.deepcopy(catalog.get_reference(id='board:'+initial['board'], section='project')['data'])
+    board = next(b for b in document['boards'] if b['id']==document['activeBoardId'])
+    document['fileGroups'][board['activeFileGroupId']] = copy.deepcopy(initial['files'])
+    return document
+
+
+def general_facts(document, spec, source):
+    board = next((b for b in document['boards'] if b['id']==document['activeBoardId']), {})
+    return {'expected':spec['expected'], 'board_kind':board.get('boardKind'),
+            'component_counts':dict(Counter(p['metadataId'] for p in document['components'])),
+            'native_wires':document['wires'], 'properties':{p['id']:p.get('properties',{}) for p in document['components']},
+            'source_multiline':'\n' in source, 'manual_review_required':True}
+
+
 async def main(args):
     # Same lock as MCP evaluation: this service is single-user.
     lock = (Path.home() / '.cache/velxio-mcp-ab-qwen.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     root = args.evidence.resolve();root.mkdir(parents=True, exist_ok=True);root.chmod(0o700)
     revision = ab.command(['git', '-C', ROOT, 'rev-parse', 'HEAD']).stdout.strip()
+    suite = json.loads(args.suite.read_text()) if args.suite else None
     ab.write_json(root/'protocol.json', {'revision':revision,'model':'qwen3.8-27b','mode':'real-chat-api/backend-editor-adapter',
-                 'single_prompt':True,'sequential':True,'timeout_seconds':720,'max_steps':40,'max_output_tokens':8192})
+                 'single_prompt':True,'sequential':True,'timeout_seconds':720,'max_steps':40,'max_output_tokens':8192,
+                 'suite_sha256':hashlib.sha256(args.suite.read_bytes()).hexdigest() if args.suite else None})
     os.environ.update(ab.toolchain_env(args.toolchain, args.arduino_cli))
     os.environ['MCP_COMPACT_INVENTORY'] = str(args.inventory.resolve())
     os.environ['MCP_COMPACT_AVR_ENABLED'] = '1'
@@ -224,14 +245,15 @@ async def main(args):
             for case in args.cases.split(','):
                 if (root / 'STOP').exists():break
                 directory = root / case;directory.mkdir();active['directory'] = directory
-                document = initial_document(case, runtime.get_catalog())
+                spec = suite['cases'][case] if suite else None
+                document = suite_document(spec, runtime.get_catalog()) if spec else initial_document(case, runtime.get_catalog())
                 initial = copy.deepcopy(document)
                 response = await client.post('/api/agent/sessions', json={'document': document});response.raise_for_status();sid = response.json()['id']
                 editor = EditorAdapter(runtime.get_catalog(), document);ready = asyncio.Event()
                 stream = asyncio.create_task(editor_stream(client, sid, 'backend-bench-editor', editor, directory, ready))
                 try:
                     await asyncio.wait_for(ready.wait(), 10)
-                    prompt = VALIDATIONS[case] if case in VALIDATIONS else bench.PROMPTS[case]
+                    prompt = spec['prompt'] if spec else VALIDATIONS[case] if case in VALIDATIONS else bench.PROMPTS[case]
                     print('START', case, flush=True);started = time.monotonic()
                     response = await client.post(f'/api/agent/sessions/{sid}/messages', json={'message': prompt, 'request_id': 'single-prompt'});response.raise_for_status()
                     session = next(s for s in runtime.sessions.values() if s.id == sid)
@@ -243,10 +265,22 @@ async def main(args):
                     refreshed = response.json()
                     if project_revision(editor.document) != refreshed['revision']:
                         editor.command({'action':'apply','expected_revision':project_revision(editor.document),'document':refreshed['document']})
-                    document = session.workspace.capture();ab.write_json(directory/'project.json', document)
+                    capture_error = None
+                    try:
+                        document = session.workspace.capture()
+                    except (ValueError, OSError, UnicodeError) as exc:
+                        capture_error = {'code':getattr(exc,'code','workspace_error'),'message':str(exc)[:1000]}
+                        document = copy.deepcopy(session.workspace.document)
+                    ab.write_json(directory/'project.json', document)
                     board = next((b for b in document['boards'] if b['id'] == document['activeBoardId']), None)
                     source = '\n'.join(f['content'] for f in document['fileGroups'].get(board['activeFileGroupId'], [])) if board else ''
-                    compiled = await asyncio.to_thread(independent, document, directory, args.arduino_cli, args.toolchain) if board else False
+                    compile_error = None
+                    compiled = False
+                    if board and capture_error is None:
+                        try:
+                            compiled = await asyncio.to_thread(independent, document, directory, args.arduino_cli, args.toolchain)
+                        except (ValueError, KeyError, OSError, subprocess.TimeoutExpired) as exc:
+                            compile_error = {'code':type(exc).__name__,'message':str(exc)[:1000]}
                     calls = ab.json_lines(directory/'tools.jsonl');errors = Counter(c['output'].get('error', {}).get('code', 'unknown') for c in calls if c['output'].get('ok') is False)
                     loops = Counter(ab.canonical({'name':c['name'],'arguments':c['arguments']}) for c in calls)
                     adapter = next((a for a in reversed(adapters) if a.root.parent == session.workspace.root), None)
@@ -277,9 +311,11 @@ async def main(args):
                     row = {'case':case,'calls':len(calls),'errors':dict(errors),'error_count':sum(errors.values()),
                            'loops':[v for v in loops.values() if v>=3],'seconds':elapsed,'tokens':dict(tokens),
                            'compile_ok':compiled,'editor_matches':project_revision(editor.document)==project_revision(document),
+                           'workspace_capture_error':capture_error,'independent_compile_error':compile_error,
                            'check_called':any(c['name']=='check_project' for c in calls),
                            'final_build_read':any(c['name']=='build_project' and c['output'].get('state')=='done' and c['output'].get('success') is True and c['output'].get('workspace_revision')==session.workspace.revision for c in calls),
-                           'facts':bench.facts(document,case,source),'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
+                           'facts':general_facts(document,spec,source) if spec else bench.facts(document,case,source),
+                           'source_sha256':hashlib.sha256(source.encode()).hexdigest(),
                            'revision':session.workspace.revision,'proof':proof,'strict_success':False,'manual_review_required':True,
                            'conclusion':session.messages[-1] if session.messages else None,'turns':session.turns}
                     row['code_revision'] = revision
@@ -287,6 +323,16 @@ async def main(args):
                     row['harness_tool_errors'] = sum(p.get('type')=='tool' and p.get('state',{}).get('status')=='error' for p in parts)
                     row['generation_limits'] = sum(m.get('info',{}).get('finish')=='length' for m in messages) if adapter else 0
                     row['file_tool_calls'] = sum(p.get('type')=='tool' and not p.get('tool','').startswith('velxio_') for p in parts)
+                    row['recipe_calls'] = [c['arguments'] for c in calls if c['name']=='save_project' and 'from_example' in c['arguments']]
+                    row['external_file_accesses'] = [p['state']['input'] for p in parts if p.get('type')=='tool' and not p.get('tool','').startswith('velxio_')
+                        and p.get('state',{}).get('status')=='completed' and any(isinstance(p.get('state',{}).get('input',{}).get(key),str)
+                            and Path(p['state']['input'][key]).is_absolute() and not Path(p['state']['input'][key]).resolve().is_relative_to(session.workspace.work.resolve())
+                            for key in ('filePath','path'))]
+                    if spec and spec.get('preserve'):
+                        current_files={f['name']:f['content'] for files in document['fileGroups'].values() for f in files}
+                        original_files={f['name']:f['content'] for files in initial['fileGroups'].values() for f in files}
+                        row['user_files_preserved']=all(current_files.get(name)==original_files[name] for name in spec['preserve']['files'])
+                        row['user_calls_preserved']=all(token in source for token in spec['preserve']['source_tokens'])
                     if case == 'V1':
                         original = next(f['content'] for files in initial['fileGroups'].values() for f in files if f['name']=='user_note.h')
                         preserved = any(f['name']=='user_note.h' and f['content']==original for files in document['fileGroups'].values() for f in files)
@@ -309,12 +355,19 @@ async def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', type=Path, required=True)
-    parser.add_argument('--cases', default='B1,B2,B3,B4,B5')
+    parser.add_argument('--cases')
+    parser.add_argument('--suite', type=Path, help='Frozen held-out prompt/requirements JSON; never supplied as model context')
     parser.add_argument('--arduino-cli', type=Path, required=True)
     parser.add_argument('--toolchain', type=Path, required=True)
     parser.add_argument('--inventory', type=Path, required=True)
     args = parser.parse_args()
-    unknown = set(args.cases.split(',')) - {'B1','B2','B3','B4','B5','V1','V2'}
+    allowed = set(json.loads(args.suite.read_text())['cases']) if args.suite else {'B1','B2','B3','B4','B5','V1','V2'}
+    import re
+    if any(not re.fullmatch(r'[A-Z][0-9]{1,2}',case) for case in allowed):
+        parser.error('Case labels must be one letter followed by one or two digits')
+    if not args.cases:
+        args.cases = ','.join(json.loads(args.suite.read_text())['cases']) if args.suite else 'B1,B2,B3,B4,B5'
+    unknown = set(args.cases.split(',')) - allowed
     if unknown:
         parser.error('This chat bench supports AVR cases B1..B5 and V1/V2 only; ESP32 requires a separate IDF evaluation.')
     asyncio.run(main(args))
