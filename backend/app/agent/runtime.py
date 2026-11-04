@@ -17,8 +17,9 @@ from app.mcp.compact.errors import normalize_error
 from .opencode import OpenCodeAdapter
 from .settings import AgentError, ConnectionSettings, SettingsStore, private_json
 from .workspace import Workspace, checked_document, project_revision
+from .display import display_text
 
-ESP32_RUN_UNSUPPORTED = "ESP32 simulation is not supported by this MCP agent bridge. Use the compact MCP build_project tool for compilation only; do not wait or poll for startup."
+ESP32_RUN_UNSUPPORTED = "ESP32 simulation is not supported by this agent bridge. Use run(simulate=false) for compilation only; do not wait or poll for simulation startup."
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Session:
     pending: dict = field(default_factory=dict)
     requests: dict = field(default_factory=dict)
     project_service: Any = None
+    simple_tools: Any = None
     compile_request: Any = None
     compile_user: Any = None
     tool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -105,17 +107,12 @@ class AgentRuntime:
 
     async def project_context(self, session):
         value = session.workspace.capture()
-        from app.mcp.compact.examples import RECIPES, recipe_metadata
-        starters = [{'id': key, 'name': self.get_catalog()._entries[key]['name'],
-                     'parameters': recipe_metadata(key)['parameters']}
-                    for key in RECIPES if key in self.get_catalog()._entries]
         result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
                   "workspace": self.source_context(session),
-                  "starter_examples": starters,
                   "boards": value["boards"], "components": value["components"], "wires": value["wires"],
                   "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()},
-                  "capabilities": {"change_board": True, "create_board": "Any board listed by search_catalog(kind=board), in an empty workspace",
-                                   "agent_run": "Uses the editor's Run pipeline for all installed board engines and language modes. Requires the installation's compiler, firmware and runtime support; existing board access rules apply. Starting/booting are pending states; only confirmed=true establishes engine startup or script completion."}}
+                  "capabilities": {"edit_components": True, "board_selection": "Use components(board=<boardKind>) to add or replace the active board.",
+                                   "agent_run": "run() saves files, checks the circuit and uses the editor's compile/load/execute pipeline. run(simulate=false) compiles only. Pending results are resumed by run(), without a build ID. Only confirmed=true establishes startup, not functional correctness."}}
         if time.monotonic() - session.browser_seen <= 25:
             inspection = await self.browser_command(session, "inspect_project")
             if inspection.get("ok"):
@@ -139,6 +136,9 @@ class AgentRuntime:
         })
 
     def emit(self, session, kind, payload):
+        if kind == 'tool.state':
+            payload = {**payload, **{key:display_text(payload[key],session.workspace.work)
+                                    for key in ('title','summary') if key in payload}}
         session.sequence += 1
         turn_id = payload.get("turn_id") or session.active_turn
         event = {"event_id": session.sequence, "type": kind, "turn_id": turn_id, "timestamp": int(time.time() * 1000), "payload": payload}
@@ -261,20 +261,17 @@ class AgentRuntime:
                 system = (
                     "You are the Velxio electronics agent. Work on the project in this conversation. "
                     "Your actual cwd, exact source paths and active_file are in workspace below. Read/edit those paths directly; no project ID or directory search is needed. "
-                    "Available starter_examples and their exact parameters are supplied below. For a complete new circuit, use a suitable one directly with save_project(from_example=...,parameters=...). No catalog search or reference read is needed for those advertised parameters. "
-                    "For a missing capability, search_catalog(kind=example,query=<short keyword>) or inspect a specific new component. Always send query explicitly when searching. "
-                    "Supported examples generate consistent code, native wires and libraries. Use advertised scalar parameters; do not rewrite or re-read generated code unless a specific detail is missing. "
-                    "When generated_behavior is returned, compare its values with the user's request and correct any mismatch before building. It describes generated code, not runtime observations. "
-                    "Existing user code/circuit must be preserved when making a local change: use file edit tools, add_component, connect_pins, set_component_properties or change_board. "
-                    "A component addition returns its real pins and defaults; connect all planned native wires in one connect_pins(connections=[...]) call. Read a new component's reference only once when needed. "
-                    "After editing, check_project() then build_project(). These automatically capture current files and select the project/version. Omit project_id, version and expected_version. save_project() also captures current file edits. "
-                    "Only state=done AND success=true proves compilation. Follow next_action if running; fix reported errors without repeating unchanged failed calls. "
-                    "matches_current_workspace=false means the build belongs to older source; never report it as a build of current files. "
-                    "When execution is requested, run_project on a supported board then observe_project. Starting/booting with confirmed=false is pending: observe without restarting. "
-                    "ESP32 simulation is unsupported: use build_project for compilation only, never call or poll ESP32 run_project. "
+                    "Use search_component only for unknown components/boards; it returns their real pins and defaults. "
+                    "Use components to add or replace the board, batch-add/update/remove parts and declare libraries. It returns source paths and mounted pins. "
+                    "Use connect to batch native wires with start/end objects containing componentId and pinName; never invent pin names. "
+                    "Write/edit code with native file tools. Preserve unrelated user code and files. "
+                    "Then call run(): saving, circuit checks, compilation and supported simulation are handled internally. No separate create/save/check/build/reference tools or project/build IDs are needed. "
+                    "For compilation only use run(simulate=false). ESP32 simulation is unsupported; run compiles it and reports this limitation. "
+                    "If pending, call run() again for progress; do not restart. Fix reported errors before retrying. "
+                    "Only compilation.success=true for the current workspace proves compilation. Only confirmed=true acknowledges simulation startup. "
                     "Report saved/applied, compilation, simulation startup and observed behavior separately. Compilation does not prove blinking, movement or display output. "
                     "On a revision conflict preserve manual edits and stop; never overwrite them by retrying stale changes. "
-                    "Catalog reference IDs are component:, board: or example: IDs; they never identify the current project. Do not invent IDs. Never run shell commands or install dependencies. "
+                    "Component/board catalog IDs differ from mounted instance IDs returned by components. Never run shell commands or install dependencies. "
                     "Reply in the user's language. Current project: " + json.dumps(context, ensure_ascii=False) +
                     ". Previous conversation after reconnect: " + json.dumps(session.messages[-8:-1], ensure_ascii=False)
                 )
@@ -363,9 +360,8 @@ class AgentRuntime:
                             for item in buffered: delta(item)
                     if part.get("type") == "tool" and not part.get("tool", "").startswith("velxio_"):
                         state = part.get("state", {})
-                        title = str(state.get("title", part.get("tool"))).replace(str(session.workspace.work) + "/", "")
-                        title = title.replace(str(session.workspace.work).lstrip("/") + "/", "")
-                        summary = str(state.get("error") or state.get("output") or "").replace(str(session.workspace.work) + '/', '')
+                        title = display_text(state.get("title", part.get("tool")), session.workspace.work)
+                        summary = display_text(state.get("error") or state.get("output") or "", session.workspace.work)
                         self.emit(session, "tool.state", {"call_id": part.get("callID") or part_id, "part_id": part_id, "message_id": part.get("messageID"), "name": part.get("tool"), "status": state.get("status", "pending"), "title": title[:300], "summary": summary[-2000:]})
                     elif (part.get("type") == "tool" and part.get("tool") == "velxio_run_project"
                           and part.get("state", {}).get("status") == "pending" and self.execution_refusal(session)):
@@ -406,13 +402,22 @@ class AgentRuntime:
         call_id = secrets.token_hex(12)
         self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "running"})
         try:
-            if name in ('search_catalog', 'get_reference', 'read_artifact', 'observe_project', 'stop_project'):
+            if name in ('search_component', 'search_catalog', 'get_reference', 'read_artifact', 'observe_project', 'stop_project'):
                 result = await self._call_tool(session, name, args)
             else:
                 async with session.tool_lock:
                     result = await self._call_tool(session, name, args)
             result = normalize_error(result, name, args)
-            summary = {key: result[key] for key in ("state", "success", "first_error", "diagnostic_summary", "structure_status", "generated_behavior", "matches_current_workspace", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
+            if name in ('search_component','components','connect','run') and result.get('error'):
+                # Errors from shared/legacy implementations must direct the
+                # model back to the available chat surface.
+                action=result['error'].get('next_action','')
+                for old,new in (('search_catalog','search_component'),('get_reference','search_component'),
+                                ('build_project','run'),('check_project','run'),('save_project','components'),
+                                ('get_project','components'),('run_project','run')):
+                    action=action.replace(old,new)
+                result['error']['next_action']=action
+            summary = {key: result[key] for key in ("state", "success", "compilation", "simulation", "behavior_verified", "first_error", "diagnostic_summary", "structure_status", "generated_behavior", "matches_current_workspace", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
             failed = (result.get('ok') is False or result.get('success') is False or
                       result.get('state') in ('error', 'interrupted') or result.get('structure_status') == 'invalid')
             self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if failed else "completed", "result_state": result.get("state"), "confirmed": result.get("confirmed"), "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
@@ -446,10 +451,16 @@ class AgentRuntime:
             session.workspace.commit(previous)
             return result
         self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
-        return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"])}
+        return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"]),
+                **({'pinouts': result['pinouts']} if 'pinouts' in result else {})}
 
     async def _call_tool(self, session, name, args):
         try:
+            if name in ('search_component','components','connect','run'):
+                from .simple_tools import SimpleChatTools
+                if session.simple_tools is None:
+                    session.simple_tools = SimpleChatTools(self, session)
+                return await session.simple_tools.call(name, args)
             if name in ('save_project', 'check_project', 'build_project', 'read_artifact'):
                 if session.project_service is None:
                     from .project_service import ChatProjectService

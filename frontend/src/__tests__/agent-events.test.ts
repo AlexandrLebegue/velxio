@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { reduceAgentEvent } from '../services/agentEvents';
-import { splitAgentThinking } from '../services/agentText';
+import { formatAgentToolText, splitAgentThinking } from '../services/agentText';
 import type { AgentEvent, AgentTurn } from '../services/agentService';
 
 describe('agent stream rendering', () => {
+  it('shortens persisted read-file paths including a path to the workspace itself', () => {
+    const root = `app/data/agent/${'a'.repeat(64)}/sessions/${'b'.repeat(32)}/work`;
+    expect(formatAgentToolText(`<path>${root}</path>`)).toBe('File: .');
+    expect(formatAgentToolText(`<path>/${root}/group-1/sketch.ino</path>`)).toBe(
+      'File: group-1/sketch.ino',
+    );
+    expect(formatAgentToolText(`Read ${root}/group-2/user_hook.h`)).toBe(
+      'Read group-2/user_hook.h',
+    );
+    expect(formatAgentToolText('group-1/sketch.ino')).toBe('group-1/sketch.ino');
+    expect(formatAgentToolText(`${root}space`)).toBe(`${root}space`);
+    expect(formatAgentToolText('XML source:\n<path>literal</path>')).toBe(
+      'XML source:\n<path>literal</path>',
+    );
+  });
   it('keeps thinking separate through every possible split of think tags', () => {
     const text = '<think>Inspect pins first.</think>Connected.';
     for (let split = 0; split <= text.length; split++) {

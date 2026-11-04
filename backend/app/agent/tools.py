@@ -8,6 +8,7 @@ from app.mcp.compact.contracts import TOOL_SCHEMAS, model_input_schema
 from app.mcp.compact.arguments import normalize
 from app.mcp.compact.errors import normalize_error, preview, pointer
 from .settings import AgentError
+from .simple_tools import CHAT_TOOLS, normalize_chat
 
 
 def create_tools(runtime):
@@ -51,15 +52,17 @@ def create_tools(runtime):
     schemas['check_project'] = ('Check the current files and circuit. Fix error-severity findings before build; partial is not runtime proof. No arguments needed.', schemas['check_project'][1])
     schemas['build_project'] = ('Compile the current project. No arguments needed; default action=start waits 20 seconds, max 60 via wait_seconds. Only state=done AND success=true proves compilation. Follow next_action if running. No simulation.', schemas['build_project'][1])
     schemas['read_artifact'] = ('Read a build log or firmware artifact in byte slices. Project source files are already in cwd: read workspace.active_file directly.', schemas['read_artifact'][1])
-    hidden = {'create_project', 'update_circuit', 'disconnect_wire'}
     search = deepcopy(schemas['search_catalog'][1])
     search['required'] = ['query']
     search['properties']['query'].pop('default', None)
     schemas['search_catalog'] = ('Search only for a missing capability. Send query=<short keyword> explicitly; starter_examples are already supplied in the project context. Use next_offset for another page.', search)
+    # Legacy calls remain accepted for in-flight/resumed conversations, but
+    # new model discovery exposes exactly four chat operations.
+    schemas.update(CHAT_TOOLS)
 
     @mcp._mcp_server.list_tools()
     async def list_tools():
-        order = list(TOOL_SCHEMAS) + [name for name in schemas if name not in TOOL_SCHEMAS and name not in hidden]
+        order = list(CHAT_TOOLS)
         return [Tool(name=name, description=schemas[name][0], inputSchema=schemas[name][1]) for name in order]
 
     @mcp._mcp_server.call_tool(validate_input=False)
@@ -69,13 +72,15 @@ def create_tools(runtime):
             session = runtime.by_token(authorization.get().removeprefix("Bearer "))
             if name not in schemas:
                 raise AgentError("unknown_tool", "Unknown tool")
-            arguments = normalize(name, arguments or {})
+            arguments = {} if arguments is None else arguments
+            arguments = normalize_chat(name, arguments) if name in CHAT_TOOLS else normalize(name, arguments)
             validate(arguments, schemas[name][1])
             dispatched = True
             result = normalize_error(await runtime.call_tool(session, name, arguments), name, arguments)
             raw = json.dumps(result, ensure_ascii=False)
             if len(raw.encode()) > 24 * 1024:
-                raw = json.dumps({"ok": False, "error": {"code": "quota_exceeded", "message": "Result exceeds 24 KiB; request a narrower catalog section"}})
+                raw = json.dumps(normalize_error({"ok": False, "error": {"code": "quota_exceeded", "message": "Result exceeds 24 KiB; request a smaller batch or search limit",
+                    "next_action":"Use search_component with limit=1, or smaller components/connect batches. An applied edit must not be repeated blindly."}},name,arguments))
         except Exception as exc:
             from jsonschema import ValidationError
             details = {}
@@ -85,6 +90,9 @@ def create_tools(runtime):
                 if name == 'search_catalog' and isinstance(arguments, dict) and 'query' not in arguments:
                     details.update(path='/query', received='<missing>', expected='Explicit query string (empty only for intentional browsing)',
                                    next_action='Call search_catalog with query set to the short keyword you intended. Your previous call contained no query. Use an advertised starter directly when it already fits.')
+                if name == 'search_component' and isinstance(arguments,dict) and 'query' not in arguments:
+                    details.update(path='/query',received='<missing>',expected='A short component or board query',
+                                   next_action='Call search_component(query=<short keyword>). Added components already return their pins.')
                 if isinstance(arguments, dict) and set(arguments) & {'project_id', 'version', 'expected_version'}:
                     details['next_action'] = f'Call {name} again without project_id, version or expected_version. This conversation selects the project automatically.'
             raw = json.dumps(normalize_error({"ok": False, "error": {"code": getattr(exc, "code", "invalid_argument"), "message": str(exc)[:500], **details}}, name, arguments))

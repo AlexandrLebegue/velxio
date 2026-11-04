@@ -23,6 +23,9 @@
   "thinking": "Thinking",
   "steps": "Agent activity",
   "execution": {
+    "compiled": "Compiled",
+    "invalid": "Needs correction",
+    "stale": "Project changed",
     "compiling": "Compiling",
     "starting": "Starting",
     "booting": "Booting",
@@ -68,6 +71,10 @@
     "cancelled": "Stopped"
   },
   "tools": {
+    "search_component": "Find components",
+    "components": "Edit components",
+    "connect": "Connect wires",
+    "run": "Run project",
     "read": "Read file",
     "write": "Write file",
     "edit": "Edit file",

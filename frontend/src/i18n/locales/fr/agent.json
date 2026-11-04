@@ -23,6 +23,9 @@
   "thinking": "Réflexion",
   "steps": "Activité de l’agent",
   "execution": {
+    "compiled": "Compilé",
+    "invalid": "À corriger",
+    "stale": "Projet modifié",
     "compiling": "Compilation",
     "starting": "Démarrage",
     "booting": "Démarrage",
@@ -68,6 +71,10 @@
     "cancelled": "Arrêté"
   },
   "tools": {
+    "search_component": "Chercher des composants",
+    "components": "Modifier les composants",
+    "connect": "Connecter les fils",
+    "run": "Lancer le projet",
     "read": "Lire le fichier",
     "write": "Écrire le fichier",
     "edit": "Modifier le fichier",

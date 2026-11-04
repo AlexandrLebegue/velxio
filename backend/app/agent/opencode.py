@@ -52,10 +52,10 @@ class OpenCodeAdapter:
                                                            "output": self.settings.max_output_tokens}}},
             }},
             "permission": {
-                "*": "deny", "read": "allow", "edit": "allow", "glob": "allow", "grep": "allow", "list": "allow",
+                "*": "deny", "read": "allow", "write": "allow", "edit": "allow", "glob": "allow", "grep": "allow", "list": "allow",
                 "external_directory": "deny", "velxio_*": "allow",
             },
-            "tools": {"*": False, "read": True, "edit": True, "glob": True, "grep": True, "list": True, "velxio_*": True},
+            "tools": {"*": False, "read": True, "write": True, "edit": True, "glob": True, "grep": True, "list": True, "velxio_*": True},
             "agent": {"velxio": {"mode": "primary", "description": "Edit and simulate the active Velxio electronics project", "steps": self.settings.max_steps}},
             "default_agent": "velxio",
             "mcp": {"velxio": {"type": "remote", "url": self.callback_url, "headers": {"Authorization": "Bearer " + self.token}, "oauth": False}},

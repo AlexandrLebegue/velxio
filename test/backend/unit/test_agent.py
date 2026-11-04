@@ -321,7 +321,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         async with manager.run():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:1234", headers=headers) as client:
                 listing = (await client.post("/tools/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})).json()
-                self.assertIn("add_component", [tool["name"] for tool in listing["result"]["tools"]])
+                self.assertEqual([tool["name"] for tool in listing["result"]["tools"]],
+                                 ['search_component','components','connect','run'])
                 with patch.object(self.runtime, "call_tool", new=AsyncMock(return_value={"ok": True})) as call:
                     for index, arguments in enumerate([pair, {"connections": [pair]}, {"connections": [pair], "from": pair["from"]}, {**pair, "connections": [pair]}, {"connections": []}]):
                         response = (await client.post("/tools/mcp", json={"jsonrpc": "2.0", "id": index + 2, "method": "tools/call", "params": {"name": "connect_pins", "arguments": arguments}})).json()
@@ -372,7 +373,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             project = await self.runtime.call_tool(session, "get_project", {})
             reference = await self.runtime.call_tool(session, "get_reference", {"id": "component:led"})
         self.assertEqual(project["pinouts"]["uno"]["pins"], ["13", "GND.1"])
-        self.assertTrue(project["capabilities"]["change_board"])
+        self.assertTrue(project["capabilities"]["edit_components"])
         self.assertEqual(reference["data"]["pins"], [{"name": "A"}, {"name": "C"}])
         self.assertEqual(reference["data"]["defaults"]["color"], "red")
         template = reference["data"]["instance_template"]

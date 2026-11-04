@@ -132,13 +132,10 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         board = document['boards'][0]
         self.assertEqual(document['fileGroups'][board['activeFileGroupId']][0]['content'], source)
 
-    async def test_starter_context_is_derived_from_shared_recipes_without_reading_ids(self):
-        from app.mcp.compact.examples import RECIPES, recipe_metadata
+    async def test_chat_context_has_no_recipe_workflow_and_legacy_recipes_remain_callable(self):
         context = await self.runtime.project_context(self.session)
-        starters = {entry['id']:entry for entry in context['starter_examples']}
-        self.assertEqual(set(starters), set(RECIPES))
-        for key in starters:
-            self.assertEqual(starters[key]['parameters'], recipe_metadata(key)['parameters'])
+        self.assertNotIn('starter_examples', context)
+        self.assertIn('components(board=', context['capabilities']['board_selection'])
         saved = await self.runtime.call_tool(self.session, 'save_project', {'from_example':'example:blink-led','parameters':{'external_led':True,'resistance_ohms':330}})
         self.assertEqual(saved['project']['board'], 'arduino-uno')
         self.assertEqual(saved['project']['connection_count'], 3)
@@ -219,10 +216,11 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
                 response = await client.post('/mcp', headers=headers, json={'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}})
                 offered = {item['name']:item for item in response.json()['result']['tools']}
                 from app.mcp.compact import TOOL_SCHEMAS
-                self.assertIn('query', offered['search_catalog']['inputSchema']['required'])
+                self.assertEqual(set(offered), {'search_component','components','connect','run'})
+                self.assertIn('query', offered['search_component']['inputSchema']['required'])
                 self.assertNotIn('query', TOOL_SCHEMAS['search_catalog']['inputSchema'].get('required', []))
                 self.assertNotIn('update_circuit', offered)
-                for index, name in enumerate(('search_catalog','get_reference','save_project','check_project','build_project','read_artifact'), 3):
+                for index, name in enumerate(('search_component','components','connect','run'), 3):
                     self.assertIn(name, offered)
                     for key in ('project_id','version','expected_version'):
                         self.assertNotIn(key, offered[name]['inputSchema']['properties'])

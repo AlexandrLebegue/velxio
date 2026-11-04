@@ -35,3 +35,13 @@ export function splitAgentThinking(text: string): { answer: string; thinking: st
   }
   return { answer: answer.join('').trim(), thinking: thinking.join('').trim() };
 }
+
+/** Display-only fallback for events saved before server-side path shortening. */
+export function formatAgentToolText(text: string): string {
+  return text
+    .replace(
+      /(?:\/?[\w.-]+\/)*agent\/[a-f\d]{32,64}\/sessions\/[a-f\d]{32}\/work(?:(\/)|(?=[\s<>"'`]|$))/gi,
+      (_match, slash: string | undefined) => (slash ? '' : '.'),
+    )
+    .replace(/^<path>([^<]*)<\/path>(?=\r?\n<type>|$)/, (_match, path: string) => `File: ${path}`);
+}
