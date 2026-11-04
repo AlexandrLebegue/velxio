@@ -32,6 +32,15 @@ File tool summaries hide the workspace's absolute path. The model need not read
 an artifact ID to find its own sketch. Native files remain grouped for projects
 with several boards; moving directories is unnecessary.
 
+The initial context advertises all reviewed starter examples with their real
+parameter schemas from the shared recipe registry. No prompt classification or
+benchmark-specific recipe selection occurs. A suitable starter needs no catalog
+round trip. For other searches the chat schema requires an explicit query;
+missing query receives a precise repair message, rather than repeated browsing.
+The external compact search schema remains unchanged. Save returns a bounded
+summary of the applied components; checks retain all returned errors/warnings,
+summarize informational codes and link the complete report artifact.
+
 ## Build truth and editor truth
 
 Chat compilation uses the genuine sealed REST owner, with the original chat

@@ -4,6 +4,7 @@ Project identities stay on the server. The editor remains authoritative for
 native circuit validation and compare-and-swap; source edits stay in cwd.
 """
 import copy
+import json
 from pathlib import Path
 
 from app.mcp.compact import ProjectStore, ProjectChecker, BuildService
@@ -97,8 +98,21 @@ class ChatProjectService:
         if not final.get('ok'):
             return final
         self.current = {**final, 'revision': self.session.workspace.revision}
-        return {'ok': True, 'saved': True, 'applied': True, 'validated': True,
+        board = next((b for b in document['boards'] if b['id'] == document['activeBoardId']), {})
+        parts = [{'id':p['id'], 'metadataId':p['metadataId'],
+                  'properties':{k:v for k,v in list(p.get('properties',{}).items())[:8]
+                                if type(v) in (bool,int,float) or isinstance(v,str) and len(v)<=80}}
+                 for p in document['components'][:8]]
+        result = {'ok': True, 'saved': True, 'applied': True, 'validated': True,
+                'project': {'board':board.get('boardKind'), 'components':parts,
+                            'component_count':len(document['components']), 'connection_count':len(document['wires']),
+                            'libraries':board.get('libraries', [])[:16], 'summary_only':True},
                 'warnings': saved.get('warnings', []), 'workspace': self.runtime.source_context(self.session)}
+        while len(json.dumps(result, ensure_ascii=False).encode()) > 20 * 1024 and parts:
+            parts.pop()
+        result['project']['components_truncated'] = len(parts) != len(document['components'])
+        result['project']['libraries_truncated'] = len(board.get('libraries', [])) > 16
+        return result
 
     async def call(self, name, arguments):
         if not isinstance(arguments, dict):
@@ -118,6 +132,11 @@ class ChatProjectService:
             if set(arguments) - {'project_id', 'version'}:
                 raise AgentError('invalid_argument', 'Call check_project() with no arguments.')
             result = self.checker.check_project(project_id=saved['project_id'], version=saved['version'])
+            if result.get('ok'):
+                issues = result['issues']
+                result['informational_codes'] = sorted({i['code'] for i in issues if i['severity'] not in ('error','warning')})
+                result['issues'] = [i for i in issues if i['severity'] in ('error','warning')]
+                result['issues_truncated'] = result['issues_truncated'] or len(issues) != len(result['issues'])
             return {k: v for k, v in result.items() if k not in ('project_id', 'version')}
         if name == 'build_project':
             request = self.session.compile_request

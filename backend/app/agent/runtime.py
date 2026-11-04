@@ -99,14 +99,19 @@ class AgentRuntime:
         group = session.workspace.groups.get(board.get('activeFileGroupId'))
         files = document['fileGroups'].get(board.get('activeFileGroupId'), [])
         primary = next((f for f in files if f['name'].endswith('.ino')), files[0] if files else None)
-        return {'cwd': str(session.workspace.work.resolve()), 'files': paths,
+        return {'cwd': str(session.workspace.work.resolve()), 'files': paths[:16], 'files_truncated': len(paths) > 16,
                 'active_file': f"{group}/{primary['name']}" if group and primary else None,
                 'project_selection': 'This conversation already selects the project. Omit project_id and version.'}
 
     async def project_context(self, session):
         value = session.workspace.capture()
+        from app.mcp.compact.examples import RECIPES, recipe_metadata
+        starters = [{'id': key, 'name': self.get_catalog()._entries[key]['name'],
+                     'parameters': recipe_metadata(key)['parameters']}
+                    for key in RECIPES if key in self.get_catalog()._entries]
         result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
                   "workspace": self.source_context(session),
+                  "starter_examples": starters,
                   "boards": value["boards"], "components": value["components"], "wires": value["wires"],
                   "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()},
                   "capabilities": {"change_board": True, "create_board": "Any board listed by search_catalog(kind=board), in an empty workspace",
@@ -256,7 +261,8 @@ class AgentRuntime:
                 system = (
                     "You are the Velxio electronics agent. Work on the project in this conversation. "
                     "Your actual cwd, exact source paths and active_file are in workspace below. Read/edit those paths directly; no project ID or directory search is needed. "
-                    "For a complete new circuit, first search_catalog(kind=example,query=<short keyword>), then save_project(from_example=...,parameters=...). "
+                    "Available starter_examples and their exact parameters are supplied below. For a complete new circuit, use a suitable one directly with save_project(from_example=...,parameters=...). No catalog search or reference read is needed for those advertised parameters. "
+                    "For a missing capability, search_catalog(kind=example,query=<short keyword>) or inspect a specific new component. Always send query explicitly when searching. "
                     "Supported examples generate consistent code, native wires and libraries. Use advertised scalar parameters; do not rewrite or re-read generated code unless a specific detail is missing. "
                     "Existing user code/circuit must be preserved when making a local change: use file edit tools, add_component, connect_pins, set_component_properties or change_board. "
                     "A component addition returns its real pins and defaults; connect all planned native wires in one connect_pins(connections=[...]) call. Read a new component's reference only once when needed. "

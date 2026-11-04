@@ -76,6 +76,7 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         path.write_text('// All code lost: void setup() {} void loop() {}')
         checked = await self.runtime.call_tool(self.session, 'check_project', {})
         self.assertEqual(checked['structure_status'], 'invalid', checked)
+        self.assertTrue(any(issue['severity']=='error' and issue.get('file')=='sketch.ino' for issue in checked['issues']), checked)
         with patch('app.api.routes.compile.bind_compact_offline_owner', new=AsyncMock()) as bind:
             result = await self.runtime.call_tool(self.session, 'build_project', {})
             self.assertFalse(result['ok'])
@@ -121,6 +122,22 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.session.workspace.work / saved['workspace']['active_file']).read_text(), source)
         self.assertEqual(self.session.workspace.document['boards'][0]['boardKind'], 'arduino-nano')
 
+    async def test_starter_context_is_derived_from_shared_recipes_without_reading_ids(self):
+        from app.mcp.compact.examples import RECIPES, recipe_metadata
+        context = await self.runtime.project_context(self.session)
+        starters = {entry['id']:entry for entry in context['starter_examples']}
+        self.assertEqual(set(starters), set(RECIPES))
+        for key in starters:
+            self.assertEqual(starters[key]['parameters'], recipe_metadata(key)['parameters'])
+        saved = await self.runtime.call_tool(self.session, 'save_project', {'from_example':'example:blink-led','parameters':{'external_led':True,'resistance_ohms':330}})
+        self.assertEqual(saved['project']['board'], 'arduino-uno')
+        self.assertEqual(saved['project']['connection_count'], 3)
+        self.assertEqual(next(p['properties']['value'] for p in saved['project']['components'] if p['metadataId']=='resistor'), '330')
+        checked = await self.runtime.call_tool(self.session, 'check_project', {})
+        self.assertTrue(checked['issues_truncated'])
+        self.assertGreater(checked['issue_count'], len(checked['issues']))
+        self.assertIn('attribute_default_type_unknown', checked['informational_codes'])
+
     async def test_a_finished_old_build_is_never_relabelled_as_the_current_source(self):
         await self.runtime.call_tool(self.session, 'save_project', {'from_example': 'example:blink-led'})
         service = self.session.project_service
@@ -165,6 +182,9 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200, response.text)
                 response = await client.post('/mcp', headers=headers, json={'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}})
                 offered = {item['name']:item for item in response.json()['result']['tools']}
+                from app.mcp.compact import TOOL_SCHEMAS
+                self.assertIn('query', offered['search_catalog']['inputSchema']['required'])
+                self.assertNotIn('query', TOOL_SCHEMAS['search_catalog']['inputSchema'].get('required', []))
                 self.assertNotIn('update_circuit', offered)
                 for index, name in enumerate(('search_catalog','get_reference','save_project','check_project','build_project','read_artifact'), 3):
                     self.assertIn(name, offered)
@@ -175,6 +195,8 @@ class ChatCompactTests(unittest.IsolatedAsyncioTestCase):
                     self.assertFalse(result['ok'], result)
                     for key in ('code','path','received','expected','next_action'):
                         self.assertIn(key, result['error'], result)
+                    self.assertEqual(self.session.events[-1]['payload']['name'], name)
+                    self.assertEqual(self.session.events[-1]['payload']['status'], 'error')
 
 
 if __name__ == '__main__':
