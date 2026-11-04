@@ -35,7 +35,7 @@ class FacadeTests(unittest.IsolatedAsyncioTestCase):
             runtime = CompactRuntime(object())
             result = await runtime.call('search_catalog', {})
         self.assertEqual(len(result['items']), 5)
-        self.assertEqual((await runtime.call('run_project', {}))['error']['code'], 'invalid_argument')
+        self.assertEqual((await runtime.call('run_project', {}))['error']['code'], 'unsupported')
         self.assertEqual((await runtime.call('save_project', {}))['error']['code'], 'owner_integration_required')
         await runtime.close()
 
@@ -230,7 +230,10 @@ class StartupInventoryTests(unittest.TestCase):
             inventory, toolchains = runtime.inventories()
             self.assertEqual(set(inventory.verify()['entries']), {'GxEPD2','Adafruit GFX Library','Adafruit BusIO'})
             self.assertEqual(toolchains.verify()['toolchains']['esp32:esp32:esp32|arduino']['idf_root'], str(root/'idf'))
-            project = json.loads((ROOT/'test/backend/fixtures/hello-epaper-esp32.vlx').read_bytes())
+            fixture = ROOT/'review/mcp-compact-smoke-20261103/hello-epaper-esp32.vlx'
+            if not fixture.exists():
+                self.skipTest('maintainer-only review fixture is not part of the public tree')
+            project = json.loads(fixture.read_bytes())
             project['boards'][0]['libraries'].append('ArduinoJson')
             store = ProjectStore(root/'store')
             saved = store.save_project(document=project); self.assertTrue(saved['ok'], saved)

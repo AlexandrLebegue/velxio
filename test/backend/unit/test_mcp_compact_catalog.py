@@ -54,6 +54,32 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertEqual(ids, sorted(self.catalog._entries))
         self.assertNotIn("next_cursor", page)
 
+    def test_compound_query_merges_all_terms_without_duplicates_and_paginates_stably(self):
+        query = 'e-ink epaper 1.54'
+        combined = self.catalog.search_catalog(query=query, kind='component', limit=50)
+        expected = set()
+        for term in query.split():
+            expected.update(item['id'] for item in self.catalog.search_catalog(query=term, kind='component', limit=50)['items'])
+        ids, offset = [], 0
+        while True:
+            page = self.catalog.search_catalog(query=query, kind='component', limit=1, offset=offset)
+            self.assertTrue(page['ok'])
+            self.assertEqual(page['total'], len(expected))
+            self.assertEqual(page['query_used'], combined['query_used'])
+            ids.extend(item['id'] for item in page['items'])
+            if page['next_offset'] is None:
+                self.assertFalse(page['has_more'])
+                break
+            self.assertGreater(page['next_offset'], offset)
+            offset = page['next_offset']
+        self.assertEqual(set(ids), expected)
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn('component:epaper-1in54-bw', ids)
+        empty_page = self.catalog.search_catalog(query='servo', kind='component', offset=100)
+        self.assertEqual(empty_page['query_used'], ['servo'])
+        self.assertEqual(empty_page['items'], [])
+        self.assertIsNone(empty_page['next_offset'])
+
     def test_offset_boundaries_maximum_limit_and_filtered_totals(self):
         first = self.catalog.search_catalog(kind="example", limit=50)
         self.assertEqual(len(first["items"]), 50)
@@ -76,7 +102,7 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertEqual(first["items"] + rest["items"], together["items"])
         self.assertEqual(first["total"], rest["total"])
 
-    def test_multibyte_search_stays_bounded_and_large_page_refuses_cleanly(self):
+    def test_multibyte_search_stays_bounded_and_large_page_continues_cleanly(self):
         snapshot = copy.deepcopy(self.catalog._snapshot)
         query = "🧪" * 256
         for entry in snapshot["entries"]:
@@ -86,7 +112,11 @@ class CompactCatalogTests(unittest.TestCase):
             page = catalog.search_catalog(query=query, offset=offset)
             self.assertTrue(page["ok"])
             self.assertLessEqual(len(encoded(page)), MAX_RESPONSE_BYTES)
-        self.assertEqual(catalog.search_catalog(query=query, limit=50)["error"]["code"], "quota_exceeded")
+        page = catalog.search_catalog(query=query, limit=50)
+        self.assertTrue(page['ok'])
+        self.assertTrue(page['truncated'])
+        self.assertLess(len(page['items']), 50)
+        self.assertEqual(page['next_offset'], len(page['items']))
 
     def test_legacy_cursor_ignored_without_changing_offset_or_query(self):
         expected = self.catalog.search_catalog(query="esp32", kind="example", limit=3, offset=5)
@@ -119,9 +149,9 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertEqual(self.catalog.get_reference(id="arduino-uno")["error"]["code"], "ambiguous_id")
 
     def test_real_esp32_pins_and_epaper_attrs_protocol(self):
-        pins = self.catalog.get_reference(id="board:esp32", section="pins")["data"]
+        pins = self.catalog.get_reference(id="board:esp32", section="pins", limit=50)["data"]
         self.assertTrue({"16", "17", "GND2", "VN", "VP"} <= {p["name"] for p in pins})
-        component = self.catalog.get_reference(id="component:esp32-devkit-v1", section="pins")["data"]
+        component = self.catalog.get_reference(id="component:esp32-devkit-v1", section="pins", limit=50)["data"]
         self.assertEqual(component, pins)
         epaper = self.catalog.get_reference(id="component:epaper-1in54-bw")["data"]
         self.assertEqual({p["name"] for p in epaper["pins"]}, {"GND", "VCC", "SCK", "SDI", "CS", "DC", "RST", "BUSY"})
@@ -167,13 +197,23 @@ class CompactCatalogTests(unittest.TestCase):
             self.assertLessEqual(len(encoded(response)), MAX_RESPONSE_BYTES)
             inspect(response)
 
-    def test_quotas_count_utf8_bytes_and_refuse_without_truncating(self):
+    def test_quotas_count_utf8_bytes_and_continue_without_silent_truncation(self):
         snapshot = copy.deepcopy(self.catalog._snapshot)
         entry = next(e for e in snapshot["entries"] if e["id"] == "example:epaper-1in54-uno-hello")
         entry["project"]["code"] = "é" * (MAX_RESPONSE_BYTES // 2)
         catalog = Catalog(snapshot)
         result = catalog.get_reference(id=entry["id"], section="code")
-        self.assertEqual(result["error"]["code"], "quota_exceeded")
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['truncated'])
+        self.assertFalse(result['data_complete'])
+        chunks = list(result['data']['files'])
+        page = result
+        while page['next_offset'] is not None:
+            page = catalog.get_reference(**page['next_request']['arguments'])
+            self.assertTrue(page['ok'])
+            self.assertLessEqual(len(encoded(page)), MAX_RESPONSE_BYTES)
+            chunks.extend(page['data']['files'])
+        self.assertEqual(''.join(item['content'] for item in chunks), entry['project']['code'])
         self.assertTrue(catalog.get_reference(id=entry["id"])["ok"])
         self.assertLessEqual(len(encoded(result)), MAX_RESPONSE_BYTES)
 
@@ -202,7 +242,7 @@ class CompactCatalogTests(unittest.TestCase):
         schema = TOOL_SCHEMAS['build_project']['inputSchema']
         self.assertEqual(schema['required'], ['action'])
         self.assertEqual(schema['properties']['action'], {'type':'string', 'enum':['start','status']})
-        self.assertEqual(set(schema['properties']), {'action','project_id','version','board_id','build_id'})
+        self.assertEqual(set(schema['properties']), {'action','project_id','version','board_id','build_id','wait_seconds'})
         for name in ('project_id','board_id','build_id'):
             self.assertEqual(schema['properties'][name], {'type':'string','minLength':1,'maxLength':200})
         self.assertEqual(schema['properties']['version'], {'type':'string','pattern':'^[0-9a-f]{64}$'})

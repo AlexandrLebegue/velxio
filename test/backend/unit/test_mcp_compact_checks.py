@@ -158,6 +158,19 @@ class ProjectCheckTests(unittest.TestCase):
         self.assertNotIn("pin_invalid", self.codes(result))
         self.assertEqual(result["status"], "partial")
 
+    def test_native_defaults_do_not_become_false_attribute_errors(self):
+        doc = document()
+        doc['components'] = [self.catalog.get_reference(id='component:led', section='project')['data']['instance_template']]
+        doc['wires'] = []
+        result = self.check(self.saved(doc))
+        self.assertEqual(result['structure_status'], 'valid')
+        self.assertIn('attribute_default_type_unknown', self.codes(result))
+        self.assertIn('attribute_type_consistency', result['checks_unavailable'])
+        self.assertEqual(result['status'], 'partial')
+        # Only the exact typed authored default is preserved as unknown.
+        doc['components'][0]['properties']['brightness'] = False
+        self.assertIn('attribute_type', self.codes(self.check(self.saved(doc))))
+
     def test_unknown_board_component_and_attributes(self):
         for field in ("board", "component"):
             doc = document()

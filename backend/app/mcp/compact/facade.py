@@ -9,17 +9,18 @@ from pathlib import Path
 
 from .catalog import Catalog, bounded
 from .contracts import TOOL_SCHEMAS
+from .errors import normalize_error
 from .projects import ProjectStore, MISSING, pointer, validate_save_arguments, validation_error
 from .checks import LibraryInventory, ProjectChecker
 from .builds import BuildService, ToolchainInventory, proof_bytes
 
 DESCRIPTIONS = {
-    'search_catalog': 'Search IDs, names, tags, summaries and keywords; case, hyphens, spaces and underscores are ignored. Five results by default; offset pagination, limit up to 50.',
-    'get_reference': 'Reference by catalog id. section=project gives a saveable native ESP32 document or an e-paper component fragment with exact pinNames; other bridges may be unknown. Example source code only in section=code.',
-    'save_project': 'Save a native document or allowlisted changes with CAS for updates. Get a minimal document/fragment via get_reference(section=project) first. Validation errors identify path, received and expected.',
-    'check_project': 'Structural checks of an exact version; no electrical or functional certification.',
-    'build_project': 'Start or query an ESP32 offline build in the active REST owner; no installation.',
-    'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices.',
+    'search_catalog': 'Search IDs, names, tags, summaries and keywords. Example hits advertise from_example.supported and the complete accepted parameter schema, so they can be saved without reading or rewriting source. Compound queries fall back to merged words; query_used lists the actual terms. Responses are at most 24 KiB. Follow next_request/next_offset, never repeat a page. truncated marks partial results. Default limit 5, max 50.',
+    'get_reference': 'Reference by catalog ID. Examples advertise save_project(from_example=...) parameters; example_references and example_options link component examples and their schemas. section=project gives native board documents or component templates. Default limit 20, max 50; follow next_request to continue the same section, or next_section when complete. Each response is at most 24 KiB. Only data_complete=true is a whole template; partial fragments must not be saved. Source is only in section=code, with file byte offsets for long source. Builds do not start simulation.',
+    'save_project': 'Prefer from_example=<catalog example ID> with its advertised short parameters to create a native project without rewriting code or wiring. Only examples advertising from_example.supported=true are accepted. Otherwise save plain sketch text or a native document. connect accepts a batch of instance.pin -> instance.pin strings (board aliases the active board), resolving common aliases to native pins and rejecting structural conflicts. Updates require project_id and expected_version. Source text is never unescaped or silently repaired.',
+    'check_project': 'Check an exact version, including unusable Arduino sketches. Errors are listed first with file, observed, expected and next_action. ok means the tool returned a report, not that the sketch is valid. No electrical or functional certification.',
+    'build_project': 'Start an offline build, waiting up to wait_seconds (default 20, max 60) for its final result. Claim build success only for state=done AND success=true; ok only means the tool request succeeded. Otherwise follow next_action. Read first_error before separate capped warnings. No installation or simulation.',
+    'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices. All tool failures have error.code/path/received/expected/next_action; correct that value before retrying.',
 }
 _SCOPE = ContextVar('compact_http_scope', default=None)
 BASE = Path(__file__).parent
@@ -64,9 +65,9 @@ def _save_schema_error(exc, arguments):
 
 class NamespaceStore(ProjectStore):
     """Principal isolation with ONE global quota lock and global byte accounting."""
-    def __init__(self, quota, principal):
+    def __init__(self, quota, principal, catalog=None):
         self.quota = quota
-        super().__init__(Path(quota.root) / principal, max_storage_bytes=quota.max_storage_bytes)
+        super().__init__(Path(quota.root) / principal, max_storage_bytes=quota.max_storage_bytes, catalog=catalog)
 
     @contextmanager
     def _locked(self, exclusive):
@@ -106,6 +107,12 @@ class CompactRuntime:
 
     async def call(self, name, arguments):
         arguments = _normalize_arguments(arguments)
+        return normalize_error(await self._call(name, arguments), name, arguments)
+
+    async def _call(self, name, arguments):
+        arguments = _normalize_arguments(arguments)
+        if name == 'run_project':
+            return {'ok': False, 'error': {'code': 'unsupported', 'message': 'Simulation is not supported by the six-tool MCP. Use build_project for compilation only; do not poll for startup.'}}
         if name not in TOOL_SCHEMAS or not isinstance(arguments, dict):
             return {'ok': False, 'error': {'code': 'invalid_argument', 'message': 'Unknown tool or invalid arguments'}}
         if self.closing:
@@ -127,7 +134,7 @@ class CompactRuntime:
             libs, tools = self.inventories()
             if self.quota is None:
                 self.quota = ProjectStore(self.root)
-            store = NamespaceStore(self.quota, principal)
+            store = NamespaceStore(self.quota, principal, catalog=self.catalog)
             checker = ProjectChecker(store, self.catalog, source_root=self.source_root, inventory=libs)
             self.services[principal] = BuildService(store, checker, toolchains=tools)
         service = self.services[principal]
@@ -192,6 +199,7 @@ def create_facade(app, **runtime_options):
         except (OSError, ValueError, KeyError, TypeError) as exc:
             result = {'ok': False, 'error': {'code': getattr(exc, 'code', 'preflight_unknown'),
                 'message': 'Local prerequisite unavailable or invalid; no installation attempted'}}
+        result = normalize_error(result, name, arguments)
         return [TextContent(type='text', text=json.dumps(result, ensure_ascii=False, separators=(',', ':')))]
 
     transport = RequestScope(mcp.streamable_http_app())

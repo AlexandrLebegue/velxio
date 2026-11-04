@@ -15,9 +15,11 @@ import re
 import stat
 import unicodedata
 import uuid
+from pathlib import Path
 
 from .catalog import CatalogError, bounded
 from .contracts import MAX_PROJECT_BYTES, MAX_RESPONSE_BYTES
+from .errors import normalize_error
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 ID = re.compile(r"^[pab]_[0-9a-f]{32}$")
@@ -347,14 +349,41 @@ def patch(doc, changes):
 def validate_save_arguments(arguments):
     if not isinstance(arguments, dict):
         invalid('', arguments, 'save_project argument object')
-    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version'}:
-        invalid(pointer('', field), arguments[field], 'known save argument: document, changes, project_id, expected_version')
+    for field in arguments.keys() - {'document', 'changes', 'project_id', 'expected_version', 'sketch', 'board', 'board_id', 'libraries', 'from_example', 'parameters', 'connect'}:
+        invalid(pointer('', field), arguments[field], 'known save argument: document, changes, sketch, from_example and their documented options')
+    if 'connect' in arguments and (not isinstance(arguments['connect'], list) or not 1 <= len(arguments['connect']) <= 128 or any(not isinstance(item, str) or not 1 <= len(item) <= 512 for item in arguments['connect'])):
+        invalid('/connect', arguments['connect'], '1..128 named connections, each instance.pin -> instance.pin (max 512 characters)')
     updating = 'project_id' in arguments
     if ('expected_version' in arguments) != updating:
         field = 'expected_version' if updating else 'project_id'
         invalid('/' + field, MISSING, 'required together: project_id and expected_version for updates')
-    if ('document' in arguments) == ('changes' in arguments):
-        invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document or changes')
+    if sum(field in arguments for field in ('document', 'changes', 'sketch', 'from_example')) != (0 if updating and 'connect' in arguments and not arguments.keys() & {'document', 'changes', 'sketch', 'from_example'} else 1):
+        invalid('/changes' if 'changes' in arguments else '/document', arguments.get('changes', MISSING), 'exactly one of document, changes, sketch or from_example')
+    if 'from_example' in arguments:
+        text(arguments['from_example'], maximum=240, path='/from_example')
+        if updating:
+            invalid('/project_id', arguments['project_id'], 'from_example creates a new isolated project; it never overwrites an existing project')
+        if not isinstance(arguments.get('parameters', {}), dict):
+            invalid('/parameters', arguments['parameters'], 'short parameter object from the example reference')
+    elif 'parameters' in arguments:
+        invalid('/parameters', arguments['parameters'], 'parameters requires from_example')
+    if 'sketch' in arguments:
+        if not isinstance(arguments['sketch'], str):
+            invalid('/sketch', arguments['sketch'], 'plain source text')
+        if len(arguments['sketch'].encode('utf-8')) > 262144:
+            invalid('/sketch', '<oversized source>', 'at most 262144 UTF-8 bytes', 'quota_exceeded')
+        if updating and 'board' in arguments:
+            invalid('/board', arguments['board'], 'board is creation-only; use board_id for updates')
+        if not updating and 'board_id' in arguments:
+            invalid('/board_id', arguments['board_id'], 'board_id selects an existing board during updates')
+        for field in ('board', 'board_id'):
+            if field in arguments:
+                text(arguments[field], path='/' + field)
+        if 'libraries' in arguments and (not isinstance(arguments['libraries'], list) or len(arguments['libraries']) > 128
+                or any(not isinstance(item, str) or not 1 <= len(item) <= 200 for item in arguments['libraries'])):
+            invalid('/libraries', arguments['libraries'], 'array of up to 128 declared library names')
+    elif arguments.keys() & {'board', 'board_id', 'libraries'}:
+        invalid('', arguments, 'board, board_id and libraries are options of the sketch form only')
     if 'changes' in arguments and not updating:
         invalid('/project_id', MISSING, 'existing project_id plus expected_version for changes')
     if updating:
@@ -374,7 +403,8 @@ def validate_save_arguments(arguments):
 
 
 class ProjectStore:
-    def __init__(self, root="/app/data/mcp-compact", *, max_storage_bytes=256 * 1024 * 1024):
+    def __init__(self, root="/app/data/mcp-compact", *, max_storage_bytes=256 * 1024 * 1024, catalog=None):
+        self.catalog = catalog
         self.root = os.fspath(root)
         if not os.path.isabs(self.root) or "\\" in self.root or any(p in (".", "..", "") for p in self.root.split("/")[1:]):
             fail("unsafe_path", "Storage root must be an absolute, unambiguous path")
@@ -506,22 +536,45 @@ class ProjectStore:
         if not isinstance(value, str) or not ID.fullmatch(value) or not value.startswith(prefix + "_"):
             fail("invalid_argument", "Invalid opaque ID")
 
-    def _response(self, operation):
+    def _response(self, operation, *, tool=None, arguments=None):
         try:
-            return bounded(operation())
+            result = bounded(operation())
         except CatalogError as exc:
-            return {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
+            result = {"ok": False, "error": {"code": exc.code, "message": str(exc)[:500], **getattr(exc, "details", {})}}
         except FileNotFoundError:
-            return {"ok": False, "error": {"code": "not_found", "message": "Project or artifact not found"}}
+            result = {"ok": False, "error": {"code": "not_found", "message": "Project or artifact not found"}}
         except OSError as exc:
             code = "quota_exceeded" if exc.errno in (errno.ENOSPC, errno.EDQUOT) else "unsafe_path" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "storage_error"
-            return {"ok": False, "error": {"code": code, "message": "Storage operation failed; existing files retained. Publication may have completed if the failure occurred after rename."}}
+            result = {"ok": False, "error": {"code": code, "message": "Storage operation failed; existing files retained. Publication may have completed if the failure occurred after rename."}}
         except (ValueError, KeyError, TypeError, RecursionError):
-            return {"ok": False, "error": {"code": "invalid_argument", "message": "Invalid document or stored metadata"}}
+            result = {"ok": False, "error": {"code": "invalid_argument", "message": "Invalid document or stored metadata"}}
+
+        return normalize_error(result, tool, arguments)
 
     def save_project(self, **arguments):
         def run():
             raw = validate_save_arguments(arguments)
+            sketch_info = None
+            if arguments.keys() & {'sketch', 'from_example', 'connect'}:
+                if self.catalog is None:
+                    from .catalog import Catalog
+                    self.catalog = Catalog.from_snapshot(Path(__file__).with_name('catalog.snapshot.json'))
+            provenance = None
+            if 'from_example' in arguments:
+                from .examples import instantiate
+                key = arguments['from_example']
+                doc, provenance = instantiate(self.catalog, key if key.startswith('example:') else 'example:' + key, arguments.get('parameters', {}))
+                raw = validate_document(doc)
+                sketch_info = (doc['activeBoardId'], 'sketch.ino')
+            elif 'sketch' in arguments:
+                from .authoring import sketch_document
+                if 'project_id' not in arguments:
+                    doc, board_id, name = sketch_document(self.catalog, arguments)
+                    raw = validate_document(doc)
+                    sketch_info = (board_id, name)
+            if 'connect' in arguments and 'project_id' not in arguments:
+                from .connections import connect_document
+                raw = validate_document(connect_document(self.catalog, json.loads(raw), arguments['connect']))
             updating = "project_id" in arguments
             project_id = arguments.get("project_id")
             if not updating:
@@ -537,11 +590,21 @@ class ProjectStore:
                                 fail("integrity_error", "Invalid project head")
                             if head["version"] != arguments["expected_version"]:
                                 fail("version_conflict", "Project head differs from expected_version")
-                            if "changes" in arguments:
+                            if arguments.keys() & {"changes", "sketch", "connect"}:
                                 old = self._read(versions, head["version"] + ".vlx")
                                 if hashlib.sha256(old).hexdigest() != head["version"]:
                                     fail("integrity_error", "Snapshot hash mismatch")
-                                raw = validate_document(patch(json.loads(old), arguments["changes"]))
+                                if 'sketch' in arguments:
+                                    doc, board_id, name = sketch_document(self.catalog, arguments, json.loads(old))
+                                    raw = validate_document(doc)
+                                    sketch_info = (board_id, name)
+                                elif 'changes' in arguments:
+                                    raw = validate_document(patch(json.loads(old), arguments["changes"]))
+                                elif raw is None:
+                                    raw = old
+                            if 'connect' in arguments:
+                                from .connections import connect_document
+                                raw = validate_document(connect_document(self.catalog, json.loads(raw), arguments['connect']))
                         version = hashlib.sha256(raw).hexdigest()
                         try:
                             previous = self._read(versions, version + ".vlx")
@@ -576,9 +639,15 @@ class ProjectStore:
                             fail("quota_exceeded", "Storage quota reached; existing files retained")
                         self._publish(artifacts, meta["artifact_id"] + ".json", index)
                         self._publish(project, "head.json", canonical({"version": version}), replace=True)
-                        return {"ok": True, "project_id": project_id, "version": version, "content_sha256": version,
+                        result = {"ok": True, "project_id": project_id, "version": version, "content_sha256": version,
                                 "project_artifact_id": meta["artifact_id"], "summary": "Native project snapshot saved", "download_url": None}
-        return self._response(run)
+                        if sketch_info:
+                            from .authoring import sketch_warnings
+                            result.update(board_id=sketch_info[0], sketch_file=sketch_info[1], warnings=sketch_warnings(arguments.get('sketch', ''), sketch_info[1]))
+                        if provenance:
+                            result['example_provenance'] = provenance
+                        return result
+        return self._response(run, tool='save_project', arguments=arguments)
 
     def read_artifact(self, **arguments):
         def run():
@@ -640,7 +709,7 @@ class ProjectStore:
                         end -= 1
                     result.update(data=raw[offset:end].decode("utf-8"), next_offset=end, eof=False, truncated=True)
                 return result
-        return self._response(run)
+        return self._response(run, tool='read_artifact', arguments=arguments)
 
     def _build_blob(self, root, build, job, kind, raw):
         if kind not in ("firmware", "build_log") or not isinstance(raw, bytes):

@@ -17,6 +17,8 @@ from .opencode import OpenCodeAdapter
 from .settings import AgentError, ConnectionSettings, SettingsStore, private_json
 from .workspace import Workspace, checked_document, project_revision
 
+ESP32_RUN_UNSUPPORTED = "ESP32 simulation is not supported by this MCP agent bridge. Use the compact MCP build_project tool for compilation only; do not wait or poll for startup."
+
 
 @dataclass
 class Session:
@@ -74,6 +76,16 @@ class AgentRuntime:
             raise AgentError("unsupported_board", f"Unknown board {kind}; use search_catalog(kind=board) to select one")
         return reference["data"]
 
+    def execution_refusal(self, session):
+        board = next((board for board in session.workspace.document["boards"]
+                      if board["id"] == session.workspace.document["activeBoardId"]), None)
+        if board is None:
+            return None
+        entry = self.get_catalog()._entries.get("board:" + board["boardKind"], {})
+        if entry.get("fqbn", "").startswith("esp32:") or "esp32" in board["boardKind"]:
+            return ESP32_RUN_UNSUPPORTED
+        return None
+
     async def project_context(self, session):
         value = session.workspace.capture()
         result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
@@ -89,6 +101,8 @@ class AgentRuntime:
                 result["capabilities"]["available_boards"] = list(session.available_boards.values())
             else:
                 result["pinouts_unavailable"] = inspection.get("error")
+        if refusal := self.execution_refusal(session):
+            result["capabilities"]["agent_run"] = {"supported": False, "state": "unsupported", "message": refusal}
         return result
 
     def save(self, session):
@@ -226,7 +240,8 @@ class AgentRuntime:
                     "Use your existing file tools to edit source files in the group directories. "
                     "Use velxio MCP tools to inspect the circuit, search real component pins, change wiring, run and observe. "
                     "Never use shell commands, install dependencies or invent a successful simulation. "
-                    "After editing code, call run_project, then observe_project to inspect serial output. "
+                    "ESP32 simulation is unsupported by this MCP agent bridge: report that immediately, without calling or polling run_project. Compilation is available separately through the six-tool compact MCP build_project contract. "
+                    "For supported boards, after editing code call run_project, then observe_project to inspect serial output. "
                     "If run_project or observe_project returns starting/booting with confirmed=false, the engine is still starting: call observe_project with duration_ms=15000, without rebuilding or restarting. A completed script is a successful terminal state. Report engine/toolchain/access errors directly; repeated reference reads cannot fix an unavailable runtime. "
                     "Report compilation, simulation startup and functional observations separately. "
                     "A revision conflict means preserve the user's manual edits and explain it. "
@@ -333,6 +348,12 @@ class AgentRuntime:
                         title = str(state.get("title", part.get("tool"))).replace(str(session.workspace.work) + "/", "")
                         title = title.replace(str(session.workspace.work).lstrip("/") + "/", "")
                         self.emit(session, "tool.state", {"call_id": part.get("callID") or part_id, "part_id": part_id, "message_id": part.get("messageID"), "name": part.get("tool"), "status": state.get("status", "pending"), "title": title[:300], "summary": str(state.get("error") or state.get("output") or "")[-2000:]})
+                    elif (part.get("type") == "tool" and part.get("tool") == "velxio_run_project"
+                          and part.get("state", {}).get("status") == "pending" and self.execution_refusal(session)):
+                        # A provider may never finish streaming even the empty
+                        # tool arguments. Refuse before MCP dispatch, too.
+                        if not done.done():
+                            done.set_exception(AgentError("unsupported", ESP32_RUN_UNSUPPORTED))
                 elif kind == "session.error":
                     if not done.done():
                         done.set_exception(AgentError("model_error", "The model rejected the request or could not call its tools. Test the connection in AI settings."))
@@ -407,24 +428,6 @@ class AgentRuntime:
                 result = getattr(self.get_catalog(), name)(**args)
                 if name == "get_reference" and not result.get("ok") and result.get("error", {}).get("code") == "not_found":
                     result["error"]["suggestions"] = self.get_catalog().suggest_references(args.get("id", ""))
-                if name == "search_catalog" and result.get("ok"):
-                    # Models often search with synonyms + size in one phrase.
-                    # Keep exact matches first, then expose which single term
-                    # found real results instead of forcing repeated discovery.
-                    query = args.get("query", "")
-                    terms = list(dict.fromkeys(query.split()))
-                    if not result["items"] and len(terms) > 1:
-                        for term in terms[:6]:
-                            if len(term) < 3:
-                                continue
-                            found = self.get_catalog().search_catalog(**{**args, "query": term})
-                            if found.get("ok") and found["items"]:
-                                result = {**found, "query_original": query, "query_used": term}
-                                break
-                    result["next_offset"] = args.get("offset", 0) + len(result["items"]) if result["has_more"] else None
-                    for item in result["items"]:
-                        if item["kind"] in ("component", "board"):
-                            item["metadataId" if item["kind"] == "component" else "boardKind"] = item["id"].split(":", 1)[1]
                 if name == "get_reference" and result.get("ok") and args.get("section", "overview") in ("overview", "pins", "attrs"):
                     kind, key = result["id"].split(":", 1)
                     if kind in ("board", "component") and time.monotonic() - session.browser_seen <= 25:
@@ -570,6 +573,9 @@ class AgentRuntime:
                     raise AgentError("wire_unknown", "Wire not found")
                 return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": "/wires", "value": [wire for wire in wires if wire["id"] != args["wire_id"]]}]})
             if name == "run_project":
+                if refusal := self.execution_refusal(session):
+                    return {"ok": False, "state": "unsupported", "confirmed": False,
+                            "error": {"code": "unsupported", "message": refusal}}
                 session.workspace.commit()
                 self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
                 return await self.browser_command(session, "run", document=session.workspace.document, revision=session.workspace.revision)

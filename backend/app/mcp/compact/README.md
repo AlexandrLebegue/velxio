@@ -1,3 +1,10 @@
+# Current small-model contracts
+
+See [the English contract and deterministic evaluation report](../../../../docs/mcp-compact-small-model-contracts.md)
+for native instance templates, merged keyword search, `query_used`, `next_offset`,
+linked examples, and explicit unsupported simulation behavior. The historical
+milestone notes below describe earlier stages and are retained for context.
+
 # Contrats et catalogue compact — jalon 2k
 
 Module indépendant : aucune inscription FastMCP, aucun import de `server.py`, de l'UI ou des compilateurs. `Catalog.search_catalog`/`get_reference` sont opérationnels depuis le jalon 2 ; `ProjectStore.save_project`/`read_artifact` le sont au sous-jalon 3a et `ProjectChecker.check_project` au 3b. `BuildService.build_project` ajoute au 3c l'orchestration persistante injectable ; **son intégration réelle au propriétaire REST est bloquée**, sans compilateur réel par défaut. `TOOL_SCHEMAS` documente les **six** noms et leurs entrées/sorties JSON Schema. Aucun `test_project`.
@@ -265,4 +272,4 @@ Un adaptateur production `test_only:false` exige toujours le vrai owner REST et 
 
 `facade.py` expose exactement six outils FastMCP sur `/mcp` dans `app.main:app`, sans importer le serveur de compatibilité. Catalogue snapshot livré avec SHA256, sans Node au runtime ; owner REST réel pour les builds, identité issue du hook REST, espaces de persistance séparés et quota global 256 MiB. Les appels build capturent leur adaptateur à l'admission. Aucun inventaire absent n'est transformé en disponibilité supposée.
 
-Voir `packaging/mcp-compact/` : contexte dérivé de l'image locale immuable, préimages inspectées obligatoires, nginx8002 ajouté sans modification du bloc80, entrypoint sans setup/install, conservation des bindings et volumes (y compris anonymes existants). Une différence du compilateur/template de base bloque l'overlay jusqu'à portage/revue, afin de préserver les correctifs réels. `scripts/mcp-compact-inventory.py` calcule les preuves locales de trois caches nommés et exécutables explicites ; transitive closure non prouvée. Le test ASGI utilise le vrai SDK si déjà installé, sinon est explicitement ignoré. Aucun déploiement/build réel/Qwen effectué ici.
+Voir `docs/mcp-compact-4c-packaging.md` et `packaging/mcp-compact/` : contexte dérivé de l'image locale immuable, préimages inspectées obligatoires, nginx8002 ajouté sans modification du bloc80, entrypoint sans setup/install, conservation des bindings et volumes (y compris anonymes existants). Une différence du compilateur/template de base bloque l'overlay jusqu'à portage/revue, afin de préserver les correctifs réels. `scripts/mcp-compact-inventory.py` calcule les preuves locales de trois caches nommés et exécutables explicites ; transitive closure non prouvée. Le test ASGI utilise le vrai SDK si déjà installé, sinon est explicitement ignoré. Aucun déploiement/build réel/Qwen effectué ici.

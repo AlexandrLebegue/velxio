@@ -84,7 +84,13 @@ change["oneOf"] = [
     {"properties": {"op": {"const": "set"}}, "required": ["value"]},
     {"properties": {"op": {"const": "remove"}}, "not": {"required": ["value"]}},
 ]
-save = obj({"document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
+save = obj({"connect": {"type": "array", "minItems": 1, "maxItems": 128, "items": string(512), "description": "Named connections, e.g. board.5 -> epd.CS. Appends native wires atomically; board aliases the active board. May accompany creation or update alone with project_id/expected_version."}, "document": document, "changes": {"type": "array", "minItems": 1, "maxItems": 128, "items": change},
+            "sketch": {"type": "string", "maxLength": 262144, "description": "Plain Arduino source. Supply real newlines and quotes; never JSON-encode a document or unescape the source yourself."},
+            "board": {**identifier, "description": "Sketch creation only; defaults to arduino-uno."},
+            "board_id": {**identifier, "description": "Optional existing board selected for a sketch update; defaults to the active board."},
+            "libraries": {"type": "array", "maxItems": 128, "items": identifier},
+            "from_example": {**string(240), "description": "Create a new project from a catalog example advertising from_example.supported=true. No source rewriting by the model."},
+            "parameters": {"type": "object", "description": "Only the short parameters advertised by this example: board, text, pins, delay_ms, angle or other explicitly listed fields."},
             "project_id": identifier, "expected_version": version})
 # Keep action/CAS alternatives below the object root for MCP client schemas.
 save["if"] = {"required": ["changes"]}
@@ -94,17 +100,30 @@ save["else"] = {
     "if": {"anyOf": [{"required": ["project_id"]}, {"required": ["expected_version"]}]},
     "then": {"required": ["project_id", "expected_version"]},
 }
+legacy_save_alternatives = {key: save.pop(key) for key in ('if', 'then', 'else')}
+save['if'] = {'required': ['sketch']}
+save['then'] = {'not': {'anyOf': [{'required': ['document']}, {'required': ['changes']}]},
+                'if': {'anyOf': [{'required': ['project_id']}, {'required': ['expected_version']}]},
+                'then': {'required': ['project_id', 'expected_version']}}
+save['else'] = legacy_save_alternatives
+text_save_alternatives = {key: save.pop(key) for key in ('if', 'then', 'else')}
+save['if'] = {'required': ['from_example']}
+save['then'] = {'not': {'anyOf': [{'required': [key]} for key in ('document', 'changes', 'sketch', 'project_id', 'expected_version', 'board', 'board_id', 'libraries')]}}
+save['else'] = text_save_alternatives
+save['else'] = {'if': {'required': ['connect'], 'not': {'anyOf': [{'required': [key]} for key in ('document', 'changes', 'sketch')]}}, 'then': {'required': ['project_id', 'expected_version']}, 'else': save['else']}
 # Per-action required/forbidden fields are enforced by BuildService.build_project.
 build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
-             "board_id": identifier, "build_id": identifier}, ["action"])
+             "board_id": identifier, "build_id": identifier,
+             "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60, "default": 20,
+                              "description": "Start only: wait for a terminal build result; 0 returns immediately. A timed-out wait never cancels the build."}}, ["action"])
 
 _INPUTS = {
     "search_catalog": obj({"query": {"type": "string", "maxLength": 256, "default": ""},
         "kind": {**enum("all", "component", "board", "example"), "default": "all"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 5},
         "offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}}),
-    "get_reference": obj({"id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview",
-        "description": "project: board:esp32 returns a minimal native document ready for save_project; component:epaper-1in54-bw returns components[] to append and exact pinNames. Other board/component project bridges: unknown. Example project sources are omitted; code retrieves them."}}, ["id"]),
+    "get_reference": obj({"offset": {"type": "integer", "minimum": 0, "maximum": MAX_SEARCH_OFFSET, "default": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20}, "id": string(240), "section": {**enum("overview", "pins", "attrs", "protocol", "libraries", "init", "limitations", "sources", "files", "project", "code"), "default": "overview",
+        "description": "project: boards return a directly saveable native document in data and an instance_template beside data. Components return data.instance_template (id, bare metadataId, x, y, properties), components[] and known pinNames or unknown. example_references links real examples; code retrieves source. Simulation is unsupported."}}, ["id"]),
     "save_project": save,
     "check_project": obj({"project_id": identifier, "version": version}, ["project_id", "version"]),
     "build_project": build,
@@ -116,20 +135,36 @@ _INPUTS = {
 
 _ERROR = obj({"ok": {"const": False}, "error": obj({
     "code": string(80), "message": string(500),
-    "path": {"type": "string", "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
+    "path_truncated": {"type": "boolean"},
+    "path": {"type": "string", "maxLength": 512, "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
     "received": {"type": "string", "maxLength": 200, "description": "JSON value preview (truncated), or <missing>."},
     "expected": string(500),
-}, ["code", "message"])}, ["ok", "error"])
+    "file": string(240), "observed": string(240), "next_action": string(500),
+}, ["code", "message", "path", "received", "expected", "next_action"])}, ["ok", "error"])
 artifact = obj({"id": identifier, "kind": string(80), "size_bytes": {"type": "integer", "minimum": 0}, "sha256": version}, ["id", "kind", "size_bytes", "sha256"])
+readable_error = obj({"file": {"type": ["string", "null"], "maxLength": 240},
+                      "line": {"type": ["integer", "null"], "minimum": 0},
+                      "message": string(240), "suggestion": string(500)}, ["file", "line", "message", "suggestion"])
 _RESULTS = {
     "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 50, "items": obj({
         "id": identifier, "kind": enum("component", "board", "example"), "name": string(500),
-        "summary": {"type": "string", "maxLength": 300}}, ["id", "kind", "name", "summary"])},
-        "total": {"type": "integer", "minimum": 0}, "has_more": {"type": "boolean"}},
-        ["revision", "items", "total", "has_more"]),
+        "summary": {"type": "string", "maxLength": 300}, "metadataId": identifier, "boardKind": identifier,
+        "from_example": {"type": "object"}}, ["id", "kind", "name", "summary"])},
+        "query_original": {"type": "string", "maxLength": 256},
+        "query_used": {"type": "array", "items": {"type": "string", "maxLength": 256}, "maxItems": 128},
+        "total": {"type": "integer", "minimum": 0}, "has_more": {"type": "boolean"},
+        "next_offset": {"type": ["integer", "null"], "minimum": 0, "maximum": MAX_SEARCH_OFFSET}},
+        ["revision", "items", "query_original", "query_used", "total", "has_more", "next_offset"]),
     "get_reference": obj({"id": identifier, "revision": version, "section": _INPUTS["get_reference"]["properties"]["section"],
-                          "data": {}}, ["id", "revision", "section", "data"]),
+                          "data": {}, "instance_template": {"type": "object"},
+                          "from_example": {"type": "object"},
+                          "example_references": {"type": "array", "items": identifier, "maxItems": 8},
+                          "example_options": {"type": "array", "maxItems": 8, "items": {"type": "object"}},
+                          "execution": obj({"supported": {"const": False}, "state": {"const": "unsupported"}, "message": string(500)}, ["supported", "state", "message"])}, ["id", "revision", "section", "data"]),
     "save_project": obj({"project_id": identifier, "version": version, "content_sha256": version,
+        "board_id": identifier, "sketch_file": string(240),
+        "example_provenance": {"type": "object"},
+        "warnings": {"type": "array", "maxItems": 2, "items": obj({"file": string(240), "observed": string(240), "correction": string(500)}, ["file", "observed", "correction"])},
         "project_artifact_id": identifier, "summary": string(500),
         # A future downloadable artifact, not a promised existing HTTP route.
         "download_url": {"type": ["string", "null"], "maxLength": 2048}},
@@ -140,13 +175,17 @@ _RESULTS = {
         "issues": {"type": "array", "maxItems": 20, "items": obj({
             "code": string(100), "path": {"type": "string", "maxLength": 512},
             "severity": enum("error", "warning", "unknown", "info"), "message": string(240),
+            "file": string(240), "observed": string(240), "expected": string(240), "next_action": string(500),
             "path_truncated": {"type": "boolean"}}, ["code", "path", "severity", "message"])},
         "issue_count": {"type": "integer", "minimum": 0, "maximum": 4096}, "issues_truncated": {"type": "boolean"},
         "checks_performed": {"type": "array", "items": string(100)},
         "checks_unavailable": {"type": "array", "items": string(100)},
-        "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}},
-        ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
-    "build_project": obj({"build_id": identifier, "state": enum("pending", "running", "done", "error", "interrupted"),
+        "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}, "next_action": string(500)},
+        ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id", "next_action"]),
+    "build_project": obj({"build_id": identifier, "state": enum("running", "done", "error", "interrupted"),
+        "stage": enum("queued", "compiling", "complete"), "next_action": string(500),
+        "first_error": {**readable_error, "type": ["object", "null"]},
+        "warnings": {"type": "array", "maxItems": 5, "items": {"type": "object"}}, "warnings_truncated": {"type": "boolean"},
         "project_id": identifier, "version": version, "board_id": identifier,
         "test_only": {"type": "boolean"}, "log_truncated": {"type": "boolean"},
         "provenance_sha256": version, "toolchain_version": string(200),
@@ -156,13 +195,46 @@ _RESULTS = {
         "diagnostics_truncated": {"type": "boolean"},
         "success": {"type": ["boolean", "null"]}, "error_kind": {"type": ["string", "null"]},
         "artifacts": {"type": "array", "maxItems": 20, "items": artifact},
-        "diagnostic_summary": {"type": "string", "maxLength": 500}}, ["build_id", "state"]),
+        "diagnostic_summary": {"type": "string", "maxLength": 500}}, ["build_id", "state", "stage", "success", "first_error", "warnings", "warnings_truncated", "next_action"]),
     "read_artifact": obj({"data": {"type": "string", "maxLength": 16384},
         "offset": {"type": "integer", "minimum": 0}, "next_offset": {"type": ["integer", "null"], "minimum": 0},
         "total_bytes": {"type": "integer", "minimum": 0}, "sha256": version,
         "eof": {"type": "boolean"}, "truncated": {"type": "boolean"}, "encoding": enum("utf8", "base64")},
         ["data", "offset", "next_offset", "total_bytes", "sha256", "eof", "truncated", "encoding"]),
 }
+
+# Catalog navigation is machine-readable and byte bounded for both tools.
+for name in ('search_catalog', 'get_reference'):
+    _RESULTS[name]['properties'].update({
+        'offset': {'type': 'integer', 'minimum': 0},
+        'limit': {'type': 'integer', 'minimum': 1, 'maximum': 50},
+        'total': {'type': 'integer', 'minimum': 0},
+        'has_more': {'type': 'boolean'},
+        'truncated': {'type': 'boolean'},
+        'next_offset': {'type': ['integer', 'null'], 'minimum': 0},
+        'max_response_bytes': {'const': MAX_RESPONSE_BYTES},
+        'next_section': {'type': ['string', 'null']},
+        'next_request': {'type': ['object', 'null']},
+        'next_action': string(500),
+    })
+    for field in ('offset', 'limit', 'total', 'has_more', 'truncated', 'next_offset', 'max_response_bytes', 'next_section', 'next_request', 'next_action'):
+        if field not in _RESULTS[name]['required']:
+            _RESULTS[name]['required'].append(field)
+_RESULTS['get_reference']['properties'].update({'data_complete': {'type': 'boolean'},
+    'metadata_omitted': {'type': 'array', 'items': {'type': 'string'}},
+    'fragments': {'type': 'array', 'maxItems': 50, 'items': {'type': 'object'}}})
+_RESULTS['get_reference']['required'].append('data_complete')
+
+# A transport-success response is not itself a build-success certificate.
+_RESULTS['build_project']['allOf'] = [
+    {'if': {'properties': {'state': {'const': 'done'}}},
+     'then': {'properties': {'success': {'const': True}, 'stage': {'const': 'complete'}}}},
+    {'if': {'properties': {'state': {'const': 'running'}}},
+     'then': {'properties': {'success': {'const': None}, 'stage': enum('queued', 'compiling'),
+                             'next_action': {'pattern': '^call build_project status build_id=b_[0-9a-f]{32}$'}}}},
+    {'if': {'properties': {'state': {'enum': ['error', 'interrupted']}}},
+     'then': {'properties': {'success': {'const': False}, 'stage': {'const': 'complete'}}}},
+]
 
 
 def output_schema(name):

@@ -1,0 +1,168 @@
+"""Reviewed catalog example recipes. No model-authored code substitutions."""
+import copy
+import hashlib
+import json
+
+from .catalog import CatalogError
+
+BLINK = 'example:blink-led'
+SERVO = 'example:uno-servo'
+EPAPER = 'example:epaper-1in54-uno-hello'
+RECIPES = {
+    BLINK: {'board': {'type': 'string', 'enum': ['arduino-uno'], 'default': 'arduino-uno'},
+            'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000},
+            'external_led': {'type': 'boolean', 'default': False},
+            'pins': {'type': 'object', 'properties': {'LED': {'type': 'integer', 'minimum': 2, 'maximum': 13, 'default': 13}}, 'additionalProperties': False}},
+    SERVO: {'board': {'type': 'string', 'enum': ['arduino-uno', 'arduino-nano'], 'default': 'arduino-uno'},
+            'delay_ms': {'type': 'integer', 'minimum': 1, 'maximum': 60000, 'default': 1000, 'description': 'Fixed-angle mode only: supply angle as well.'},
+            'angle': {'type': 'integer', 'minimum': 0, 'maximum': 180, 'description': 'When supplied, replace the sweep with a fixed angle.'},
+            'pins': {'type': 'object', 'properties': {'PWM': {'type': 'integer', 'minimum': 2, 'maximum': 13, 'default': 9}}, 'additionalProperties': False}},
+    EPAPER: {'board': {'type': 'string', 'enum': ['arduino-uno', 'esp32'], 'default': 'arduino-uno'},
+             'text': {'type': 'string', 'minLength': 1, 'maxLength': 16, 'default': 'Velxio'},
+             'frame': {'type': 'boolean', 'default': False},
+             'pins': {'type': 'object', 'properties': {role: {'type': 'integer', 'minimum': 2, 'maximum': 33}
+                      for role in ('CS', 'DC', 'RST', 'BUSY')}, 'additionalProperties': False,
+                      'description': 'Defaults: Uno CS=10 DC=9 RST=8 BUSY=7; ESP32 CS=5 DC=17 RST=16 BUSY=4. Controls must be distinct. Uno allows 2..10; ESP32 allows 2,4,5,12..17,21,22,25..27,32,33. SPI, serial and reserved pins are excluded.'}},
+}
+
+
+def recipe_metadata(reference_id):
+    fields = RECIPES.get(reference_id)
+    if fields is None:
+        return {'supported': False}
+    return {'supported': fields is not None, 'parameters': {
+        'type': 'object', 'properties': copy.deepcopy(fields or {}), 'additionalProperties': False}}
+
+
+def uses_component(reference_id, component):
+    return component in ({BLINK: ('led', 'resistor'), SERVO: ('servo',), EPAPER: ('epaper-1in54-bw',)}.get(reference_id, ()))
+
+
+def _checked(parameters, fields, path='/parameters'):
+    from .projects import invalid, pointer
+    if not isinstance(parameters, dict):
+        invalid(path, parameters, 'short parameter object')
+    for key in parameters.keys() - fields.keys():
+        invalid(pointer(path, key), parameters[key], 'known parameters: ' + ', '.join(fields))
+    for key, value in parameters.items():
+        spec = fields[key]
+        kind = spec['type']
+        if kind == 'object':
+            _checked(value, spec['properties'], pointer(path, key))
+        elif (kind == 'integer' and (type(value) is not int or not spec['minimum'] <= value <= spec['maximum'])
+              or kind == 'boolean' and type(value) is not bool
+              or kind == 'string' and (not isinstance(value, str) or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                  or 'enum' in spec and value not in spec['enum']
+                  or not spec.get('minLength', 1) <= len(value) <= spec.get('maxLength', 200))):
+            invalid(pointer(path, key), value, json.dumps(spec, ensure_ascii=True))
+
+
+def _replace(source, old, new, count=1):
+    if source.count(old) != count:
+        raise CatalogError('unsupported', 'Catalog source no longer matches the reviewed recipe; review is required')
+    return source.replace(old, new)
+
+
+def instantiate(catalog, reference_id, parameters):
+    entry = catalog._entries.get(reference_id)
+    if reference_id not in RECIPES or entry is None or entry['kind'] != 'example':
+        raise CatalogError('unsupported', 'No reviewed native recipe for this example; select one advertising from_example.supported=true')
+    _checked(parameters, RECIPES[reference_id])
+    values = {key: copy.deepcopy(spec['default']) for key, spec in RECIPES[reference_id].items() if 'default' in spec}
+    values.update(copy.deepcopy(parameters))
+    board_kind = values['board']
+    project = entry['project']
+    source = project.get('code')
+    if not isinstance(source, str) or '\n' not in source:
+        raise CatalogError('unsupported', 'The reviewed recipe requires the catalog multiline Arduino source')
+    original_hash = hashlib.sha256(source.encode('utf-8')).hexdigest()
+    doc = catalog.get_reference(id='board:' + board_kind, section='project')['data']
+    board = doc['boards'][0]
+    board.update(id='arduino-uno', libraries=copy.deepcopy(project.get('libraries', [])))
+    doc['activeBoardId'] = board['id']
+    for part in project['components']:
+        key = part['type'].removeprefix('wokwi-').removeprefix('velxio-')
+        if key == 'arduino-uno':
+            continue
+        fragment = catalog.get_reference(id='component:' + key, section='project')
+        if not fragment.get('ok'):
+            raise CatalogError('unsupported', 'A recipe component is missing from the catalog')
+        native = fragment['data']['instance_template']
+        native.update(id=part['id'], x=part.get('x', 400), y=part.get('y', 100))
+        native['properties'].update(copy.deepcopy(part.get('properties', {})))
+        doc['components'].append(native)
+    doc['wires'] = copy.deepcopy(project['wires'])
+    pins = values.get('pins', {})
+    if reference_id == BLINK:
+        pin = pins.get('LED', 13)
+        if pin != 13 and not values['external_led']:
+            raise CatalogError('invalid_argument', 'The built-in LED is fixed at 13; set external_led=true to remap it')
+        source = _replace(source, 'pinMode(13, OUTPUT)', f'pinMode({pin}, OUTPUT)')
+        source = _replace(source, 'digitalWrite(13,', f'digitalWrite({pin},', 2)
+        source = _replace(source, 'delay(1000);', f"delay({values['delay_ms']});", 2)
+        source = source.replace('built-in LED on pin 13', f'LED on pin {pin}')
+        if values['external_led']:
+            for key in ('led', 'resistor'):
+                native = catalog.get_reference(id='component:' + key, section='project')['data']['instance_template']
+                native.update(x=450 if key == 'led' else 300, y=100)
+                doc['components'].append(native)
+            doc['wires'] = [
+                {'id': 'led-drive', 'start': {'componentId': board['id'], 'pinName': str(pin)}, 'end': {'componentId': 'resistor-1', 'pinName': '1'}},
+                {'id': 'led-series', 'start': {'componentId': 'resistor-1', 'pinName': '2'}, 'end': {'componentId': 'led-1', 'pinName': 'A'}},
+                {'id': 'led-ground', 'start': {'componentId': 'led-1', 'pinName': 'C'}, 'end': {'componentId': board['id'], 'pinName': 'GND.1'}},
+            ]
+        pins = {'LED': pin}
+    elif reference_id == SERVO:
+        pin = pins.get('PWM', 9)
+        source = _replace(source, '#define SERVO_PIN 9', f'#define SERVO_PIN {pin}')
+        source = source.replace('pin 9', 'pin ' + str(pin))
+        if 'angle' in values:
+            if source.count('void loop() {') != 1:
+                raise CatalogError('unsupported', 'Servo loop no longer matches the reviewed recipe')
+            source = source.split('void loop() {')[0] + f"void loop() {{\n  myServo.write({values['angle']});\n  delay({values['delay_ms']});\n}}\n"
+            source = source.replace('Servo Motor Sweep', 'Fixed Servo Angle')
+            source = _replace(source, 'Serial.println("Servo Sweep demo");', f'Serial.println("Servo angle={values["angle"]}");')
+        elif 'delay_ms' in parameters:
+            raise CatalogError('invalid_argument', 'Servo delay_ms requires angle; otherwise the original sweep is preserved')
+        else:
+            values.pop('delay_ms', None)
+        for wire in doc['wires']:
+            if wire['end']['pinName'] == 'PWM':
+                wire['start']['pinName'] = str(pin)
+        pins = {'PWM': pin}
+        if board_kind == 'arduino-nano':
+            source = source.replace('Arduino Uno', 'Arduino Nano')
+    else:
+        defaults = dict(zip(('CS', 'DC', 'RST', 'BUSY'), (10, 9, 8, 7) if board_kind == 'arduino-uno' else (5, 17, 16, 4)))
+        pins = {**defaults, **pins}
+        forbidden = {0, 1, 11, 12, 13} if board_kind == 'arduino-uno' else {0, 1, 3, 6, 7, 8, 9, 10, 18, 19, 20, 23, 24, 28, 29, 30, 31}
+        limit = 13 if board_kind == 'arduino-uno' else 33
+        if len(set(pins.values())) != 4 or any(pin > limit or pin in forbidden for pin in pins.values()):
+            raise CatalogError('invalid_argument', 'Control pins must be distinct board GPIOs outside fixed SPI, serial and reserved pins')
+        for role, old in zip(('CS', 'DC', 'RST', 'BUSY'), (10, 9, 8, 7)):
+            source = _replace(source, f'/*{role}=*/{old}', f'/*{role}=*/{pins[role]}')
+        source = '\n'.join(line.replace('Arduino Uno', 'ESP32') if board_kind == 'esp32' and line.startswith('//') else line
+                           for line in source.split('\n') if not line.startswith('// Wiring:'))
+        source = f'// Native {board_kind} variant; ' + ', '.join(f'{role}={pin}' for role, pin in pins.items()) + '\n' + source
+        source = _replace(source, 'F("Velxio")', 'F(' + json.dumps(values['text'], ensure_ascii=False) + ')')
+        if values['frame']:
+            source = _replace(source, '    display.fillScreen(GxEPD_WHITE);', '    display.fillScreen(GxEPD_WHITE);\n    display.drawRect(0, 0, 200, 200, GxEPD_BLACK);')
+        for wire in doc['wires']:
+            role = wire['end']['pinName']
+            if role in pins:
+                wire['start']['pinName'] = str(pins[role])
+            elif board_kind == 'esp32':
+                wire['start']['pinName'] = {'SDI': '23', 'SCK': '18', 'VCC': '3V3', 'GND': 'GND'}[role]
+    for wire in doc['wires']:
+        if wire['start']['componentId'] == board['id'] and wire['start']['pinName'] == 'GND' and board_kind != 'esp32':
+            wire['start']['pinName'] = 'GND.1'
+    board['id'] = 'board'
+    doc['activeBoardId'] = 'board'
+    for wire in doc['wires']:
+        for endpoint in (wire['start'], wire['end']):
+            if endpoint['componentId'] == 'arduino-uno':
+                endpoint['componentId'] = 'board'
+    doc['fileGroups'][board['activeFileGroupId']] = [{'name': 'sketch.ino', 'content': source}]
+    doc['name'] = entry['name']
+    return doc, {'example_id': reference_id, 'catalog_revision': catalog.revision, 'source_sha256': original_hash,
+                 'recipe_version': 1, 'parameters': {**values, 'pins': pins}}

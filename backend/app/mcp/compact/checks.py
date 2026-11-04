@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from .projects import DIR_FLAGS, VERSION, ProjectStore, canonical, fail, filename, validate_document
 from .contracts import MAX_RESPONSE_BYTES
+from .sketches import sketch_issues
 
 
 class LibraryInventory:
@@ -200,7 +201,8 @@ class ProjectChecker:
             report = self._check(doc, pid, version)
             meta = self.store._store_report(pid, version, report)
             issues = []
-            for issue in report["issues"][:20]:
+            ordered = sorted(report['issues'], key=lambda issue: issue['severity'] != 'error')
+            for issue in ordered[:20]:
                 small = dict(issue)
                 if len(small["path"]) > 512:
                     small.update(path=small["path"][:512], path_truncated=True)
@@ -211,21 +213,24 @@ class ProjectChecker:
                     "diagnostic_summary": f'{report["counts"]["error"]} structural errors; {len(report["issues"])} diagnostics; no electrical or functional validation',
                     "diagnostic_artifact_id": meta["artifact_id"], "diagnostic_artifact_sha256": meta["sha256"],
                     "issues": issues, "issue_count": len(report["issues"]), "issues_truncated": len(report["issues"]) > len(issues)}
+            error = next((issue for issue in ordered if issue['severity'] == 'error'), None)
+            result['next_action'] = (error.get('next_action', 'Repair the reported error, save a new version and call check_project again.') if error else
+                                     'Review unavailable checks; request a build only with verified dependency and toolchain evidence.')
             while len(canonical(result)) > MAX_RESPONSE_BYTES and issues:
                 issues.pop()
                 result["issues_truncated"] = True
             return result
-        return self.store._response(run)
+        return self.store._response(run, tool='check_project', arguments=arguments)
 
     def _check(self, doc, pid, version):
         issues = []
         unavailable = {"electrical_validation", "functional_simulation", "compiler_execution"}
         performed = ["snapshot_integrity", "object_ids", "catalog_ids", "known_attributes", "endpoints", "documented_pins", "duplicate_connections", "gpio_role_overlap", "declared_dependencies", "board_language"]
 
-        def emit(code, path, severity, message):
+        def emit(code, path, severity, message, **details):
             if len(issues) >= 4096:
                 fail("quota_exceeded", "Check exceeds 4096 diagnostics; complete report was not truncated")
-            issues.append({"code": code, "path": path, "severity": severity, "message": message[:240]})
+            issues.append({"code": code, "path": path, "severity": severity, "message": message[:240], **details})
 
         entries = self.catalog._entries
         known_libraries = {name for item in entries.values() if item["kind"] == "example"
@@ -284,6 +289,11 @@ class ProjectChecker:
                         emit("dependency_absent", lp, "error", "Dependency is absent from the verified, caller-declared complete inventory")
                     else:
                         emit("dependency_manifest_verified", lp, "info", "Manifest bytes match injected inventory; compilation compatibility remains unchecked")
+            if board.get('languageMode', 'arduino') == 'arduino':
+                if 'arduino_sketch_sanity' not in performed:
+                    performed.append('arduino_sketch_sanity')
+                for issue in sketch_issues(doc['fileGroups'][board['activeFileGroupId']], pointer('fileGroups', board['activeFileGroupId'])):
+                    emit(**issue)
             if policy is not None:
                 self._files(board, doc["fileGroups"][board["activeFileGroupId"]], policy, emit)
 
@@ -305,6 +315,15 @@ class ProjectChecker:
                 kind = attr["type"]
                 valid = (kind in ("string", "color", "select") and isinstance(value, str) or
                          kind == "number" and type(value) in (int, float) or kind == "boolean" and type(value) is bool)
+                default = entry.get("defaults", {}).get(name)
+                if (not valid and name in entry.get("defaults", {})
+                    and type(value) is type(default) and value == default):
+                    # Some authored UI defaults contradict their declared
+                    # property type (e.g. LED brightness=1, type=string).
+                    # Preserve the exact native default, but do not certify it.
+                    emit("attribute_default_type_unknown", ap, "unknown", "Native default contradicts the documented type; preserved as authored")
+                    unavailable.add("attribute_type_consistency")
+                    continue
                 if not valid:
                     emit("attribute_type", ap, "error", "Attribute value does not match its documented type")
                 elif ("options" in attr and value not in attr["options"]) or (kind == "number" and (value < attr.get("min", value) or value > attr.get("max", value))):
