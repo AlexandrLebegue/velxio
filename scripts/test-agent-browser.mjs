@@ -99,8 +99,40 @@ try {
   if (evidence.restoredSteps !== steps)
     throw new Error("Action history was lost after reload");
   if (
+    process.env.AGENT_TEST_SWAP === "1" &&
+    (!results.some(
+      (result) =>
+        result.ok &&
+        result.boards?.some(
+          (board) => board.boardKind === "esp32" && board.id === "arduino-uno",
+        ),
+    ) ||
+      !results.some(
+        (result) =>
+          result.ok &&
+          result.boards?.some(
+            (board) =>
+              board.boardKind === "arduino-uno" && board.id === "arduino-uno",
+          ),
+      ) ||
+      !results.some(
+        (result) =>
+          result.ok &&
+          result.pins?.some((pin) => pin.name === "A") &&
+          result.defaults?.color === "red",
+      ) ||
+      !results.some((result) =>
+        result.available_boards?.some((board) => board.boardKind === "esp32"),
+      ))
+  )
+    throw new Error(
+      "Board replacement did not preserve identity or apply both architectures",
+    );
+  if (
     process.env.AGENT_TEST_CIRCUIT === "1" &&
-    (!state.connection?.endsWith(":12") ||
+    (!state.connection?.endsWith(
+      process.env.AGENT_TEST_PICO === "1" ? ":GP12" : ":12",
+    ) ||
       state.ledOn !== true ||
       failedSteps !== 1 ||
       thinkingBlocks < 1 ||
@@ -157,12 +189,25 @@ try {
   await page.screenshot({ path: `${artifact}-mobile.png`, fullPage: true });
   writeFileSync(`${artifact}-evidence.json`, JSON.stringify(evidence, null, 2));
   if (
-    !results.some((result) => result.state === "running" && result.ok) ||
+    !results.some(
+      (result) =>
+        result.state === "running" && result.ok && result.confirmed === true,
+    ) ||
     !results.some((result) => result.serial?.includes("42")) ||
     evidence.alerts.length ||
     pageErrors.length
   )
     process.exitCode = 1;
+  if (
+    process.env.AGENT_TEST_PICO === "1" &&
+    !results.some(
+      (result) =>
+        result.ok &&
+        result.board === "raspberry-pi-pico" &&
+        result.confirmed === true,
+    )
+  )
+    throw new Error("Pico engine did not confirm execution");
 } catch (error) {
   await page.screenshot({
     path: "/tmp/velxio-agent-ui-failure.png",

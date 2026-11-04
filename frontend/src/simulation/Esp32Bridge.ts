@@ -1,3 +1,8 @@
+import {
+  beginBoardExecution,
+  updateBoardExecution,
+  acknowledgeBoardEvent,
+} from './boardExecutionState';
 /**
  * Esp32Bridge
  *
@@ -320,8 +325,9 @@ export class Esp32Bridge {
    * guest saved to the card). The worker keeps the bytes of a transaction no
    * sink here can see, so this is how the tab's copy of the card follows.
    */
-  onBusBlob: ((owner: string, name: string, offset: number, data: Uint8Array, blobId?: string) => void) | null =
-    null;
+  onBusBlob:
+    | ((owner: string, name: string, offset: number, data: Uint8Array, blobId?: string) => void)
+    | null = null;
   onConnected: (() => void) | null = null;
   onDisconnected: (() => void) | null = null;
   onError: ((msg: string) => void) | null = null;
@@ -339,6 +345,7 @@ export class Esp32Bridge {
   onSerialLink: ((link: SerialLink | null) => void) | null = null;
 
   private socket: WebSocket | null = null;
+  private executionRun = 0;
   private _connected = false;
   private _pendingFirmware: string | null = null;
   private _pendingSensors: Array<Record<string, unknown>> = [];
@@ -465,10 +472,13 @@ export class Esp32Bridge {
       base.replace(/^https?:/, wsProtocol) +
       `/simulation/ws/${encodeURIComponent(sessionId + '::' + this.boardId)}`;
 
+    const executionRun = beginBoardExecution(this.boardId, 'booting');
+    this.executionRun = executionRun;
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
 
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       this._connected = true;
       console.log(
         `[Esp32Bridge:${this.boardId}] WebSocket connected → sending start_esp32 (firmware: ${this._pendingFirmware ? `${Math.round((this._pendingFirmware.length * 0.75) / 1024)}KB` : 'none'})`,
@@ -492,6 +502,7 @@ export class Esp32Bridge {
     };
 
     socket.onmessage = (event: MessageEvent) => {
+      if (this.socket !== socket) return;
       let msg: { type: string; data: Record<string, unknown> };
       try {
         msg = JSON.parse(event.data as string);
@@ -680,6 +691,7 @@ export class Esp32Bridge {
         }
         case 'system': {
           const evt = msg.data.event as string;
+          acknowledgeBoardEvent(this.boardId, evt, msg.data, executionRun);
           // Before the log line: a card write is a sector of base64 per event.
           if (evt === 'bus_blob') {
             const b64 = typeof msg.data.data === 'string' ? msg.data.data : '';
@@ -728,6 +740,15 @@ export class Esp32Bridge {
           break;
         }
         case 'error':
+          updateBoardExecution(
+            this.boardId,
+            'error',
+            {
+              code: String(msg.data.code ?? 'engine_error'),
+              message: String(msg.data.message ?? 'Engine error'),
+            },
+            executionRun,
+          );
           console.error(`[Esp32Bridge:${this.boardId}] error: ${msg.data.message as string}`);
           this.onError?.(msg.data.message as string);
           break;
@@ -735,6 +756,13 @@ export class Esp32Bridge {
     };
 
     socket.onclose = (ev) => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_closed', message: 'The simulation connection closed unexpectedly.' },
+        executionRun,
+      );
       console.log(`[Esp32Bridge:${this.boardId}] WebSocket closed (code=${ev?.code ?? '?'})`);
       this._connected = false;
       this.socket = null;
@@ -742,12 +770,20 @@ export class Esp32Bridge {
     };
 
     socket.onerror = (ev) => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_failed', message: 'Could not connect to the simulation backend.' },
+        executionRun,
+      );
       console.error(`[Esp32Bridge:${this.boardId}] WebSocket error`, ev);
       this.onError?.('WebSocket error');
     };
   }
 
   disconnect(): void {
+    updateBoardExecution(this.boardId, 'stopped', {}, this.executionRun);
     if (this.socket) {
       this._send({ type: 'stop_esp32' });
       this.socket.close();

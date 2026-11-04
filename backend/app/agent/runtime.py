@@ -27,6 +27,7 @@ class Session:
     messages: list = field(default_factory=list)
     events: list = field(default_factory=list)
     turns: list = field(default_factory=list)
+    available_boards: dict = field(default_factory=dict)
     sequence: int = 0
     task: Any = None
     adapter: Any = None
@@ -59,6 +60,36 @@ class AgentRuntime:
 
     def available(self):
         return os.environ.get("VELXIO_AGENT_ENABLED", "1") != "0" and bool(OpenCodeAdapter.executable())
+
+    def get_catalog(self):
+        if self.catalog is None:
+            self.catalog = Catalog.from_snapshot(Path(__file__).parents[1] / "mcp/compact/catalog.snapshot.json")
+        return self.catalog
+
+    def board_definition(self, kind, session):
+        if kind in session.available_boards:
+            return session.available_boards[kind]
+        reference = self.get_catalog().get_reference(id="board:" + kind)
+        if not reference.get("ok"):
+            raise AgentError("unsupported_board", f"Unknown board {kind}; use search_catalog(kind=board) to select one")
+        return reference["data"]
+
+    async def project_context(self, session):
+        value = session.workspace.capture()
+        result = {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
+                  "boards": value["boards"], "components": value["components"], "wires": value["wires"],
+                  "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()},
+                  "capabilities": {"change_board": True, "create_board": "Any board listed by search_catalog(kind=board), in an empty workspace",
+                                   "agent_run": "Uses the editor's Run pipeline for all installed board engines and language modes. Requires the installation's compiler, firmware and runtime support; existing board access rules apply. Starting/booting are pending states; only confirmed=true establishes engine startup or script completion."}}
+        if time.monotonic() - session.browser_seen <= 25:
+            inspection = await self.browser_command(session, "inspect_project")
+            if inspection.get("ok"):
+                result["pinouts"] = inspection.get("pinouts", {})
+                session.available_boards = {board["boardKind"]: board for board in inspection.get("available_boards", [])}
+                result["capabilities"]["available_boards"] = list(session.available_boards.values())
+            else:
+                result["pinouts_unavailable"] = inspection.get("error")
+        return result
 
     def save(self, session):
         offset = max(0, len(session.messages) - 100)
@@ -189,15 +220,29 @@ class AgentRuntime:
                 collector = asyncio.create_task(self._collect(session, ready, done))
                 await asyncio.wait_for(ready.wait(), 15)
                 self.emit(session, "turn.phase", {"phase": "working"})
+                context = await self.project_context(session)
                 system = (
                     "You are the Velxio electronics coding agent. Work only on the active project. "
                     "Use your existing file tools to edit source files in the group directories. "
                     "Use velxio MCP tools to inspect the circuit, search real component pins, change wiring, run and observe. "
                     "Never use shell commands, install dependencies or invent a successful simulation. "
                     "After editing code, call run_project, then observe_project to inspect serial output. "
+                    "If run_project or observe_project returns starting/booting with confirmed=false, the engine is still starting: call observe_project with duration_ms=15000, without rebuilding or restarting. A completed script is a successful terminal state. Report engine/toolchain/access errors directly; repeated reference reads cannot fix an unavailable runtime. "
                     "Report compilation, simulation startup and functional observations separately. "
                     "A revision conflict means preserve the user's manual edits and explain it. "
+                    "The current project, its real pinouts, file paths and capabilities are supplied below; act on them directly. "
+                    "Do not re-read known component references or project state. For a new part, get_reference once with section=overview supplies pins, defaults and attributes together. "
+                    "Read example code only when you need a library API or protocol detail. Once enough information is available, edit, run and observe. "
+                    "Use add_component for new parts: it supplies defaults, an instance ID, pins and example guidance. Do not re-read its reference. "
+                    "Connect all planned wires in one connect_pins(connections=[...]) call; IDs and geometry are generated for you. "
+                    "References provide examples and recommended_example with real IDs, board targets and libraries: read the recommended ID with section=code when you need an API. "
+                    "An example for a different board requires pin adaptation; never invent example IDs. If a lookup fails, use its suggestions. "
+                    "Keep file searches inside the project; installed library headers are outside this workspace. "
+                    "Catalog IDs (component:led) identify references; project metadataId uses the bare key (led). "
+                    "Reserve update_circuit for advanced edits; component additions and connections have dedicated tools. "
+                    "To replace a board use change_board; preserve its ID and source files, pass pin_map for incompatible pins. Do not recreate or discard an existing project. "
                     "Reply in the user's language. Group mapping: " + json.dumps(session.workspace.groups) +
+                    ". Active project: " + json.dumps(context, ensure_ascii=False) +
                     ". Previous conversation (context after a reconnect): " + json.dumps(session.messages[-8:-1], ensure_ascii=False)
                 )
                 await session.adapter.prompt(message, system)
@@ -308,7 +353,7 @@ class AgentRuntime:
         session.pending[command_id] = future
         self.emit(session, "browser.command", {"command_id": command_id, "action": action, "expected_revision": session.browser_revision, **data})
         try:
-            result = await asyncio.wait_for(future, 180 if action == "run" else 20)
+            result = await asyncio.wait_for(future, self.settings.read(session.owner).timeout_seconds if action == "run" else 20)
             if result.get("applied_revision") == session.workspace.revision:
                 session.browser_revision = result["applied_revision"]
             return result
@@ -322,8 +367,8 @@ class AgentRuntime:
         self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "running"})
         try:
             result = await self._call_tool(session, name, args)
-            summary = {key: result[key] for key in ("state", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
-            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if result.get("ok") is False else "completed", "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
+            summary = {key: result[key] for key in ("state", "confirmed", "evidence", "board", "language_mode", "next_action", "connections", "validated", "applied", "serial", "logs", "error") if key in result}
+            self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error" if result.get("ok") is False else "completed", "result_state": result.get("state"), "confirmed": result.get("confirmed"), "summary": json.dumps(summary, ensure_ascii=False)[-3000:]})
             return result
         except asyncio.CancelledError:
             self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "cancelled"})
@@ -332,58 +377,193 @@ class AgentRuntime:
             self.emit(session, "tool.state", {"call_id": call_id, "name": name, "title": name, "status": "error", "summary": str(exc)[:1000]})
             raise
 
+    async def apply_candidate(self, session, candidate):
+        previous = session.workspace.document
+        revision = project_revision(candidate)
+        validation = await self.browser_command(session, "validate_circuit", document=candidate, revision=revision)
+        if not validation.get("ok"):
+            return validation
+        # The browser resolves aliases to real pad names for both the
+        # renderer and electrical engines before this becomes active.
+        candidate = checked_document(validation.get("document", candidate))
+        revision = project_revision(candidate)
+        if validation.get("revision") != revision:
+            raise AgentError("revision_conflict", "Circuit normalization differs between server and editor")
+        session.workspace.commit(candidate)
+        try:
+            result = await self.browser_command(session, "apply", document=candidate, revision=revision)
+        except (Exception, asyncio.CancelledError):
+            session.workspace.commit(previous)
+            raise
+        if not result.get("ok"):
+            session.workspace.commit(previous)
+            return result
+        self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
+        return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"])}
+
     async def _call_tool(self, session, name, args):
         try:
             if name in ("search_catalog", "get_reference"):
-                if self.catalog is None:
-                    self.catalog = Catalog.from_snapshot(Path(__file__).parents[1] / "mcp/compact/catalog.snapshot.json")
-                return getattr(self.catalog, name)(**args)
+                result = getattr(self.get_catalog(), name)(**args)
+                if name == "get_reference" and not result.get("ok") and result.get("error", {}).get("code") == "not_found":
+                    result["error"]["suggestions"] = self.get_catalog().suggest_references(args.get("id", ""))
+                if name == "search_catalog" and result.get("ok"):
+                    # Models often search with synonyms + size in one phrase.
+                    # Keep exact matches first, then expose which single term
+                    # found real results instead of forcing repeated discovery.
+                    query = args.get("query", "")
+                    terms = list(dict.fromkeys(query.split()))
+                    if not result["items"] and len(terms) > 1:
+                        for term in terms[:6]:
+                            if len(term) < 3:
+                                continue
+                            found = self.get_catalog().search_catalog(**{**args, "query": term})
+                            if found.get("ok") and found["items"]:
+                                result = {**found, "query_original": query, "query_used": term}
+                                break
+                    result["next_offset"] = args.get("offset", 0) + len(result["items"]) if result["has_more"] else None
+                    for item in result["items"]:
+                        if item["kind"] in ("component", "board"):
+                            item["metadataId" if item["kind"] == "component" else "boardKind"] = item["id"].split(":", 1)[1]
+                if name == "get_reference" and result.get("ok") and args.get("section", "overview") in ("overview", "pins", "attrs"):
+                    kind, key = result["id"].split(":", 1)
+                    if kind in ("board", "component") and time.monotonic() - session.browser_seen <= 25:
+                        live = await self.browser_command(session, "describe_part", kind=kind, part_id=key)
+                        if live.get("ok"):
+                            section = args.get("section", "overview")
+                            if section == "overview":
+                                result["data"].update({k: v for k, v in live.items() if k != "ok"})
+                                result["data"]["pins_source"] = live.get("pin_source", "live editor")
+                                result["data"]["limitations"] = [item for item in result["data"].get("limitations", [])
+                                    if not item.startswith(("Unextracted pin names", "Physical pin list not extracted"))]
+                            else:
+                                result["data"] = live.get(section, result["data"])
+                        else:
+                            result["live_pin_error"] = live.get("error")
+                if name == "get_reference" and result.get("ok") and args.get("section", "overview") == "overview":
+                    kind, key = result["id"].split(":", 1)
+                    if kind == "component":
+                        data = result["data"]
+                        defaults = data.get("defaults", {attr["name"]: attr["defaultValue"] for attr in data.get("attrs", []) if "defaultValue" in attr})
+                        data["metadataId"] = key
+                        data["instance_template"] = {"id": key + "-1", "metadataId": key, "x": 300, "y": 100, "properties": defaults}
+                    elif kind == "board":
+                        result["data"]["boardKind"] = key
+                    if kind in ("component", "board"):
+                        active = next((board for board in session.workspace.document["boards"]
+                                       if board["id"] == session.workspace.document["activeBoardId"]), None)
+                        examples = self.get_catalog().related_examples(result["id"], active["boardKind"] if active else None)
+                        result["data"]["examples"] = examples
+                        result["data"]["example_references"] = [item["id"] for item in examples]
+                        recommended = next((item for item in examples if item["code_available"]), None)
+                        result["data"]["recommended_example"] = ({**recommended,
+                            "adapt_board_pins": bool(active and not recommended["matches_active_board"])} if recommended else None)
+                return result
             if name == "get_project":
-                value = session.workspace.document
-                return {"ok": True, "revision": session.workspace.revision, "groups": session.workspace.groups,
-                        "boards": value["boards"], "components": value["components"], "wires": value["wires"],
-                        "files": {g: [f["name"] for f in files] for g, files in value["fileGroups"].items()}}
+                return await self.project_context(session)
+            if name == "change_board":
+                value = session.workspace.capture()
+                board_id = args.get("board_id") or value["activeBoardId"]
+                board = next((item for item in value["boards"] if item["id"] == board_id), None)
+                if board is None:
+                    raise AgentError("board_unknown", "No matching board; inspect the active project")
+                definition = self.board_definition(args["board"], session)
+                mode = args.get("language_mode", board.get("languageMode", "arduino"))
+                if "language_mode" in args and definition["languages"] and mode not in definition["languages"]:
+                    raise AgentError("unsupported_language", "This board supports: " + ", ".join(definition["languages"]))
+                if definition["languages"] and mode not in definition["languages"]:
+                    mode = definition["languages"][0]
+                if board["boardKind"] != args["board"]:
+                    board.pop("boardOptions", None)  # Compiler options belong to the old target.
+                board["boardKind"], board["languageMode"] = args["board"], mode
+                for wire in value["wires"]:
+                    for side in ("start", "end"):
+                        endpoint = wire[side]
+                        if endpoint["componentId"] == board_id:
+                            endpoint["pinName"] = args.get("pin_map", {}).get(endpoint["pinName"], endpoint["pinName"])
+                result = await self.apply_candidate(session, checked_document(value))
+                if result.get("ok"):
+                    result.update(board=board, sources_preserved=True)
+                return result
             if name == "create_project":
                 if session.workspace.document["boards"] or session.workspace.document["components"]:
                     raise AgentError("project_not_empty", "The current project already has a circuit. Edit it, or open a blank workspace before creating a starter.")
                 board = args.get("board", "arduino-uno")
-                if board not in ("arduino-uno", "arduino-nano", "arduino-mega", "attiny85"):
-                    raise AgentError("unsupported_board", "Choose an AVR board for the first agent starter")
+                self.board_definition(board, session)
                 value = {"format": "velxio-project", "version": 1,
                          "boards": [{"id": "board", "boardKind": board, "x": 100, "y": 100, "activeFileGroupId": "group-board", "languageMode": "arduino", "serialBaudRate": 0}],
                          "fileGroups": {"group-board": [{"name": "sketch.ino", "content": "void setup() {\n  pinMode(LED_BUILTIN, OUTPUT);\n}\n\nvoid loop() {\n  digitalWrite(LED_BUILTIN, HIGH);\n  delay(500);\n  digitalWrite(LED_BUILTIN, LOW);\n  delay(500);\n}\n"}]},
                          "components": [], "wires": [], "activeBoardId": "board"}
-                session.workspace.sync(value, session.workspace.revision)
-                result = await self.browser_command(session, "create", document=value, revision=session.workspace.revision)
-                return {**result, "groups": session.workspace.groups}
-            if name == "update_circuit":
+                if board.startswith("raspberry-pi-") and board != "raspberry-pi-pico":
+                    value["fileGroups"]["group-board"] = [{"name": "main.py", "content": "print(\"Hello from Velxio\")\n"}]
+                elif board not in ("arduino-uno", "arduino-nano", "arduino-mega", "attiny85"):
+                    value["fileGroups"]["group-board"] = [{"name": "sketch.ino", "content": "void setup() { Serial.begin(115200); }\nvoid loop() { Serial.println(\"Hello from Velxio\"); delay(1000); }\n"}]
                 previous = session.workspace.document
-                candidate = session.workspace.circuit_candidate(args["changes"])
-                revision = project_revision(candidate)
-                validation = await self.browser_command(session, "validate_circuit", document=candidate, revision=revision)
-                if not validation.get("ok"):
-                    return validation
-                # The browser resolves aliases to real pad names for both the
-                # renderer and electrical engines before this becomes active.
-                candidate = checked_document(validation.get("document", candidate))
-                revision = project_revision(candidate)
-                if validation.get("revision") != revision:
-                    raise AgentError("revision_conflict", "Circuit normalization differs between server and editor")
-                session.workspace.commit(candidate)
+                session.workspace.sync(value, session.workspace.revision)
                 try:
-                    result = await self.browser_command(session, "apply", document=candidate, revision=revision)
+                    result = await self.browser_command(session, "create", document=value, revision=session.workspace.revision)
                 except (Exception, asyncio.CancelledError):
-                    session.workspace.commit(previous)
+                    session.workspace.sync(previous, session.workspace.revision)
                     raise
                 if not result.get("ok"):
-                    session.workspace.commit(previous)
-                    return result
-                self.emit(session, "workspace.changed", {"revision": session.workspace.revision})
-                return {"ok": True, "revision": session.workspace.revision, "saved": True, "applied": True, "validated": True, "connections": len(candidate["wires"])}
-            if name == "connect_pins":
+                    session.workspace.sync(previous, session.workspace.revision)
+                return {**result, "groups": session.workspace.groups,
+                        "board": value["boards"][0],
+                        "files": {group: [item["name"] for item in files] for group, files in value["fileGroups"].items()}}
+            if name == "update_circuit":
+                return await self.apply_candidate(session, session.workspace.circuit_candidate(args["changes"]))
+            if name == "add_component":
+                key = args["component"]
+                reference = await self._call_tool(session, "get_reference", {"id": key if key.startswith("component:") else "component:" + key})
+                if not reference.get("ok"):
+                    return reference
+                definition = reference["data"]
+                key = definition["metadataId"]
                 value = session.workspace.capture()
-                value["wires"].append({"id": "wire-" + secrets.token_hex(6), "start": args["from"], "end": args["to"]})
-                return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": "/wires", "value": value["wires"]}]})
+                existing = {item["id"] for item in value["boards"] + value["components"]}
+                instance_id = args.get("instance_id")
+                if instance_id is None:
+                    suffix = 1
+                    while f"{key}-{suffix}" in existing:
+                        suffix += 1
+                    instance_id = f"{key}-{suffix}"
+                if instance_id in existing:
+                    raise AgentError("duplicate_id", f"Instance {instance_id} already exists; choose a different instance_id")
+                board = next((item for item in value["boards"] if item["id"] == value["activeBoardId"]), {})
+                index = len(value["components"])
+                component = {"id": instance_id, "metadataId": key,
+                             "x": args.get("x", board.get("x", 0) + 440 + (index % 3) * 300),
+                             "y": args.get("y", board.get("y", 0) + (index // 3) * 320),
+                             "properties": {**definition["instance_template"]["properties"], **args.get("properties", {})}}
+                value["components"].append(component)
+                result = await self.apply_candidate(session, checked_document(value))
+                if result.get("ok"):
+                    result.update(component=next(item for item in session.workspace.document["components"] if item["id"] == instance_id),
+                                  reference=definition)
+                return result
+            if name == "connect_pins":
+                if "connections" in args and ("from" in args or "to" in args):
+                    raise AgentError("invalid_argument", "Use connections OR a single from/to pair, not both")
+                connections = args.get("connections", [{"from": args.get("from"), "to": args.get("to")}])
+                if not isinstance(connections, list) or not 1 <= len(connections) <= 128:
+                    raise AgentError("invalid_argument", "connections must contain 1..128 pairs")
+                value = session.workspace.capture()
+                added = [{"id": "wire-" + secrets.token_hex(6), "start": pair["from"], "end": pair["to"]} for pair in connections]
+                value["wires"].extend(added)
+                try:
+                    result = await self.apply_candidate(session, checked_document(value))
+                except AgentError as exc:
+                    result = {"ok": False, "error": {"code": exc.code, "message": str(exc),
+                                                     "details": getattr(exc, "details", {})}}
+                if result.get("ok"):
+                    result.update(added_connections=len(added), connection_ids=[wire["id"] for wire in added])
+                else:
+                    details = result.get("error", {}).get("details", {})
+                    index = next((index for index, wire in enumerate(added) if wire["id"] == details.get("wire_id")), None)
+                    if index is not None:
+                        result["error"]["connection_index"] = index
+                        result["error"]["connection"] = connections[index]
+                return result
             if name == "disconnect_wire":
                 wires = session.workspace.document["wires"]
                 if not any(wire["id"] == args["wire_id"] for wire in wires):
@@ -401,7 +581,7 @@ class AgentRuntime:
                 properties = {**components[index].get("properties", {}), **args["properties"]}
                 return await self._call_tool(session, "update_circuit", {"changes": [{"op": "set", "path": f"/components/{index}/properties", "value": properties}]})
             if name == "observe_project":
-                return await self.browser_command(session, "observe", duration_ms=min(max(args.get("duration_ms", 500), 0), 5000))
+                return await self.browser_command(session, "observe", duration_ms=min(max(args.get("duration_ms", 500), 0), 15000))
             if name == "stop_project":
                 return await self.browser_command(session, "stop")
             raise AgentError("unknown_tool", "Unknown Velxio tool")

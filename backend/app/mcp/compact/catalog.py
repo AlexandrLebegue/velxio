@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import json
 import re
@@ -185,6 +186,39 @@ class Catalog:
         if entry["kind"] == "component":
             return any(c["type"].removeprefix("wokwi-").removeprefix("velxio-") == entry["key"] for c in project["components"])
         return entry["kind"] == "board" and (project.get("boardType") == entry["key"] or any(b["boardKind"] == entry["key"] for b in project.get("boards", [])))
+
+    def _example_summary(self, entry, board_kind=None):
+        project = entry["project"]
+        boards = list(dict.fromkeys([
+            *([project["boardType"]] if project.get("boardType") else []),
+            *(board["boardKind"] for board in project.get("boards", [])),
+        ]))
+        return {"id": entry["id"], "title": entry["name"], "board_kinds": boards,
+                "libraries": project.get("libraries", []),
+                "code_available": bool(self._files(project)),
+                "matches_active_board": board_kind in boards if board_kind else False}
+
+    def related_examples(self, reference_id, board_kind=None, limit=5):
+        """Metadata only, from actual matching examples; no code or compatibility invented."""
+        entry = self._entries.get(reference_id)
+        if entry is None or entry["kind"] not in ("component", "board"):
+            return []
+        examples = [self._example_summary(item, board_kind) for item in self._entries.values()
+                    if item["kind"] == "example" and self._uses(item["project"], entry)]
+        examples.sort(key=lambda item: (not item["matches_active_board"], not item["code_available"], item["id"]))
+        return examples[:limit]
+
+    def suggest_references(self, reference_id, limit=3):
+        """Suggest existing IDs of the requested kind after a failed lookup."""
+        kind, _, key = reference_id.partition(":")
+        candidates = [item for item in self._entries.values() if item["kind"] == kind]
+        words = set(key.replace("_", "-").casefold().split("-"))
+        def score(item):
+            overlap = len(words & set(item["key"].casefold().split("-"))) / max(1, len(words))
+            return overlap + difflib.SequenceMatcher(None, key.casefold(), item["key"].casefold()).ratio()
+        candidates.sort(key=lambda item: (-score(item), item["id"]))
+        return [self._example_summary(item) if kind == "example" else {"id": item["id"], "title": item["name"]}
+                for item in candidates[:limit] if score(item) >= .4]
 
     @staticmethod
     def _without_code(value):

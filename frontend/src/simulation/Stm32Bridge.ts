@@ -1,3 +1,8 @@
+import {
+  beginBoardExecution,
+  updateBoardExecution,
+  acknowledgeBoardEvent,
+} from './boardExecutionState';
 /**
  * Stm32Bridge
  *
@@ -110,6 +115,7 @@ export class Stm32Bridge {
   onSpiBatch: ((bytes: Uint8Array) => void) | null = null;
 
   private socket: WebSocket | null = null;
+  private executionRun = 0;
   private _connected = false;
   private _pendingFirmware: string | null = null;
   private _pendingSensors: Array<Record<string, unknown>> = [];
@@ -137,10 +143,13 @@ export class Stm32Bridge {
       base.replace(/^https?:/, wsProtocol) +
       `/simulation/ws/${encodeURIComponent(sessionId + '::' + this.boardId)}`;
 
+    const executionRun = beginBoardExecution(this.boardId, 'booting');
+    this.executionRun = executionRun;
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
 
     socket.onopen = () => {
+      if (this.socket !== socket) return;
       this._connected = true;
       this.onConnected?.();
       this._send({
@@ -159,6 +168,7 @@ export class Stm32Bridge {
     };
 
     socket.onmessage = (event: MessageEvent) => {
+      if (this.socket !== socket) return;
       let msg: { type: string; data: Record<string, unknown> };
       try {
         msg = JSON.parse(event.data as string);
@@ -197,6 +207,7 @@ export class Stm32Bridge {
         }
         case 'system': {
           const evt = msg.data.event as string;
+          acknowledgeBoardEvent(this.boardId, evt, msg.data, executionRun);
           if (evt === 'crash') this.onCrash?.(msg.data);
           // The worker took a line sensor it has no model for. It is the only
           // side that knows, which is why the declaration below carries no
@@ -251,20 +262,46 @@ export class Stm32Bridge {
           break;
         }
         case 'error':
+          updateBoardExecution(
+            this.boardId,
+            'error',
+            {
+              code: String(msg.data.code ?? 'engine_error'),
+              message: String(msg.data.message ?? 'Engine error'),
+            },
+            executionRun,
+          );
           this.onError?.(msg.data.message as string, msg.data.code as string | undefined);
           break;
       }
     };
 
     socket.onclose = () => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_closed', message: 'The simulation connection closed unexpectedly.' },
+        executionRun,
+      );
       this._connected = false;
       this.socket = null;
       this.onDisconnected?.();
     };
-    socket.onerror = () => this.onError?.('WebSocket error');
+    socket.onerror = () => {
+      if (this.socket !== socket) return;
+      updateBoardExecution(
+        this.boardId,
+        'error',
+        { code: 'connection_failed', message: 'Could not connect to the simulation backend.' },
+        executionRun,
+      );
+      this.onError?.('WebSocket error');
+    };
   }
 
   disconnect(): void {
+    updateBoardExecution(this.boardId, 'stopped', {}, this.executionRun);
     if (this.socket) {
       this._send({ type: 'stop_stm32' });
       this.socket.close();

@@ -50,6 +50,12 @@ export function AgentTimeline({ turn }: { turn: AgentTurn }) {
                   ? X
                   : Square;
             const label = t(`agent.tools.${step.name}`, { defaultValue: step.title || step.name });
+            const statusLabel =
+              step.status === 'completed' && step.result_state
+                ? t(`agent.execution.${step.result_state}`, {
+                    defaultValue: t(`agent.status.${step.status}`),
+                  })
+                : t(`agent.status.${step.status}`);
             const details =
               step.summary && step.summary !== '{}'
                 ? step.summary
@@ -64,14 +70,14 @@ export function AgentTimeline({ turn }: { turn: AgentTurn }) {
                     <details>
                       <summary>
                         <span className="agent-step-name">{label}</span>
-                        <span>{t(`agent.status.${step.status}`)}</span>
+                        <span>{statusLabel}</span>
                       </summary>
                       <pre>{details}</pre>
                     </details>
                   ) : (
                     <div className="agent-step-label">
                       <span className="agent-step-name">{label}</span>
-                      <span>{t(`agent.status.${step.status}`)}</span>
+                      <span>{statusLabel}</span>
                     </div>
                   )}
                 </div>

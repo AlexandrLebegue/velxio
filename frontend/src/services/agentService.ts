@@ -30,6 +30,8 @@ export interface AgentStep {
   title: string;
   status: 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
   summary?: string;
+  result_state?: string;
+  confirmed?: boolean;
   duration_ms?: number;
   started_at?: number;
 }
