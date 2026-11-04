@@ -39,6 +39,7 @@ class CompactAuthoringTests(unittest.TestCase):
 
     def assembled(self):
         doc = self.board()
+        doc['fileGroups']['sketch'][0]['content'] = 'void setup() {}\nvoid loop() {}\n'
         fragment = self.screen()
         doc['components'].extend(fragment['components'])
         # Exact board names come from the pins reference, not guessed GPIO labels.

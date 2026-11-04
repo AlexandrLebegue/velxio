@@ -96,7 +96,9 @@ save["else"] = {
 }
 # Per-action required/forbidden fields are enforced by BuildService.build_project.
 build = obj({"action": enum("start", "status"), "project_id": identifier, "version": version,
-             "board_id": identifier, "build_id": identifier}, ["action"])
+             "board_id": identifier, "build_id": identifier,
+             "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60, "default": 20,
+                              "description": "Start only: wait for a terminal build result; 0 returns immediately. A timed-out wait never cancels the build."}}, ["action"])
 
 _INPUTS = {
     "search_catalog": obj({"query": {"type": "string", "maxLength": 256, "default": ""},
@@ -119,8 +121,12 @@ _ERROR = obj({"ok": {"const": False}, "error": obj({
     "path": {"type": "string", "description": "RFC 6901 pointer; document errors are relative to the native document, argument errors to the tool arguments. Empty string denotes the root."},
     "received": {"type": "string", "maxLength": 200, "description": "JSON value preview (truncated), or <missing>."},
     "expected": string(500),
+    "file": string(240), "observed": string(240), "next_action": string(500),
 }, ["code", "message"])}, ["ok", "error"])
 artifact = obj({"id": identifier, "kind": string(80), "size_bytes": {"type": "integer", "minimum": 0}, "sha256": version}, ["id", "kind", "size_bytes", "sha256"])
+readable_error = obj({"file": {"type": ["string", "null"], "maxLength": 240},
+                      "line": {"type": ["integer", "null"], "minimum": 0},
+                      "message": string(240), "suggestion": string(500)}, ["file", "line", "message", "suggestion"])
 _RESULTS = {
     "search_catalog": obj({"revision": version, "items": {"type": "array", "maxItems": 50, "items": obj({
         "id": identifier, "kind": enum("component", "board", "example"), "name": string(500),
@@ -145,13 +151,17 @@ _RESULTS = {
         "issues": {"type": "array", "maxItems": 20, "items": obj({
             "code": string(100), "path": {"type": "string", "maxLength": 512},
             "severity": enum("error", "warning", "unknown", "info"), "message": string(240),
+            "file": string(240), "observed": string(240), "expected": string(240), "next_action": string(500),
             "path_truncated": {"type": "boolean"}}, ["code", "path", "severity", "message"])},
         "issue_count": {"type": "integer", "minimum": 0, "maximum": 4096}, "issues_truncated": {"type": "boolean"},
         "checks_performed": {"type": "array", "items": string(100)},
         "checks_unavailable": {"type": "array", "items": string(100)},
-        "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}},
-        ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id"]),
-    "build_project": obj({"build_id": identifier, "state": enum("pending", "running", "done", "error", "interrupted"),
+        "diagnostic_summary": string(500), "diagnostic_artifact_id": {"type": ["string", "null"]}, "next_action": string(500)},
+        ["status", "structure_status", "project_id", "version", "catalog_revision", "diagnostic_artifact_sha256", "issues", "issue_count", "issues_truncated", "checks_performed", "checks_unavailable", "diagnostic_summary", "diagnostic_artifact_id", "next_action"]),
+    "build_project": obj({"build_id": identifier, "state": enum("running", "done", "error", "interrupted"),
+        "stage": enum("queued", "compiling", "complete"), "next_action": string(500),
+        "first_error": {**readable_error, "type": ["object", "null"]},
+        "warnings": {"type": "array", "maxItems": 5, "items": {"type": "object"}}, "warnings_truncated": {"type": "boolean"},
         "project_id": identifier, "version": version, "board_id": identifier,
         "test_only": {"type": "boolean"}, "log_truncated": {"type": "boolean"},
         "provenance_sha256": version, "toolchain_version": string(200),
@@ -161,13 +171,24 @@ _RESULTS = {
         "diagnostics_truncated": {"type": "boolean"},
         "success": {"type": ["boolean", "null"]}, "error_kind": {"type": ["string", "null"]},
         "artifacts": {"type": "array", "maxItems": 20, "items": artifact},
-        "diagnostic_summary": {"type": "string", "maxLength": 500}}, ["build_id", "state"]),
+        "diagnostic_summary": {"type": "string", "maxLength": 500}}, ["build_id", "state", "stage", "success", "first_error", "warnings", "warnings_truncated", "next_action"]),
     "read_artifact": obj({"data": {"type": "string", "maxLength": 16384},
         "offset": {"type": "integer", "minimum": 0}, "next_offset": {"type": ["integer", "null"], "minimum": 0},
         "total_bytes": {"type": "integer", "minimum": 0}, "sha256": version,
         "eof": {"type": "boolean"}, "truncated": {"type": "boolean"}, "encoding": enum("utf8", "base64")},
         ["data", "offset", "next_offset", "total_bytes", "sha256", "eof", "truncated", "encoding"]),
 }
+
+# A transport-success response is not itself a build-success certificate.
+_RESULTS['build_project']['allOf'] = [
+    {'if': {'properties': {'state': {'const': 'done'}}},
+     'then': {'properties': {'success': {'const': True}, 'stage': {'const': 'complete'}}}},
+    {'if': {'properties': {'state': {'const': 'running'}}},
+     'then': {'properties': {'success': {'const': None}, 'stage': enum('queued', 'compiling'),
+                             'next_action': {'pattern': '^call build_project status build_id=b_[0-9a-f]{32}$'}}}},
+    {'if': {'properties': {'state': {'enum': ['error', 'interrupted']}}},
+     'then': {'properties': {'success': {'const': False}, 'stage': {'const': 'complete'}}}},
+]
 
 
 def output_schema(name):

@@ -17,8 +17,8 @@ DESCRIPTIONS = {
     'search_catalog': 'Search IDs, names, tags, summaries and keywords. If a compound phrase has no matches, merge matching words without duplicate IDs; query_used lists the actual terms. Use next_offset for pagination, never repeat the same page. Five results by default, limit up to 50.',
     'get_reference': 'Reference by catalog ID. section=project gives a saveable native board document or a component instance_template with bare metadataId, defaults and known pinNames. Follow example_references for library APIs; read source with section=code. Boards report execution unsupported: builds do not start simulation.',
     'save_project': 'Save a native document or allowlisted changes with CAS for updates. Get a minimal document/fragment via get_reference(section=project) first. Validation errors identify path, received and expected.',
-    'check_project': 'Structural checks of an exact version; no electrical or functional certification.',
-    'build_project': 'Start or query an ESP32 offline build in the active REST owner; no installation.',
+    'check_project': 'Check an exact version, including unusable Arduino sketches. Errors are listed first with file, observed, expected and next_action. ok means the tool returned a report, not that the sketch is valid. No electrical or functional certification.',
+    'build_project': 'Start an offline build, waiting up to wait_seconds (default 20, max 60) for its final result. Claim build success only for state=done AND success=true; ok only means the tool request succeeded. Otherwise follow next_action. Read first_error before separate capped warnings. No installation or simulation.',
     'read_artifact': 'Read an immutable artifact by opaque ID in bounded byte slices.',
 }
 _SCOPE = ContextVar('compact_http_scope', default=None)

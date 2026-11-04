@@ -228,7 +228,7 @@ class CompactCatalogTests(unittest.TestCase):
         schema = TOOL_SCHEMAS['build_project']['inputSchema']
         self.assertEqual(schema['required'], ['action'])
         self.assertEqual(schema['properties']['action'], {'type':'string', 'enum':['start','status']})
-        self.assertEqual(set(schema['properties']), {'action','project_id','version','board_id','build_id'})
+        self.assertEqual(set(schema['properties']), {'action','project_id','version','board_id','build_id','wait_seconds'})
         for name in ('project_id','board_id','build_id'):
             self.assertEqual(schema['properties'][name], {'type':'string','minLength':1,'maxLength':200})
         self.assertEqual(schema['properties']['version'], {'type':'string','pattern':'^[0-9a-f]{64}$'})

@@ -134,16 +134,19 @@ async def run_scenario(catalog, scenario):
             checked = await client.call('check_project', project_id=saved['project_id'], version=saved['version'])
             assert checked['structure_status'] == 'valid', (name, checked['issues'])
             assert not any(item['severity'] == 'error' for item in checked['issues'])
-            started = await client.call('build_project', action='start', project_id=saved['project_id'], version=saved['version'], board_id=board['id'])
-            # Controlled owner completion, not a model polling loop or a timing claim.
-            await asyncio.gather(*builds.tasks.values())
-            finished = await client.call('build_project', action='status', build_id=started['build_id'])
+            finished = await client.call('build_project', action='start', project_id=saved['project_id'], version=saved['version'], board_id=board['id'])
+            polls = 0
+            if finished['state'] == 'running':
+                # Only a non-terminal start result needs another tool call.
+                await asyncio.gather(*builds.tasks.values())
+                finished = await client.call('build_project', action='status', build_id=finished['build_id'])
+                polls = 1
             assert finished['state'] == 'done' and finished['success'] and finished['test_only']
             firmware = next(item for item in finished['artifacts'] if item['kind'] == 'firmware')
             await client.call('read_artifact', artifact_id=firmware['id'], length=4096, encoding='base64')
             return {'scenario': name, 'tool_calls': len(client.calls), 'calls_by_tool': dict(Counter(client.calls)),
                     'unexpected_errors': client.errors, 'repeated_identical_calls': sum(count - 1 for count in client.signatures.values()),
-                    'build_status_polls': 1, 'controlled_build_callbacks': len(callbacks),
+                    'build_status_polls': polls, 'controlled_build_callbacks': len(callbacks),
                     'simulation': 'unsupported', 'test_only': True, 'real_compiler_executed': False}
         finally:
             await builds.close()

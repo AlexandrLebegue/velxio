@@ -20,6 +20,6 @@ class DeterministicScenarioTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(case['unexpected_errors'], 0)
             self.assertEqual(case['repeated_identical_calls'], 0)
             self.assertEqual(case['controlled_build_callbacks'], 1)
-            self.assertEqual(case['build_status_polls'], 1)
+            self.assertEqual(case['build_status_polls'], 0)
             self.assertEqual(case['simulation'], 'unsupported')
             self.assertTrue(case['test_only'])

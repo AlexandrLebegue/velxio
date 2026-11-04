@@ -82,14 +82,14 @@ orchestrator with the existing controlled owner adapter pattern.
 
 | Scenario | Tool calls | Unexpected tool errors | Repeated identical calls | Status polls |
 | --- | ---: | ---: | ---: | ---: |
-| LED / Uno | 9 | 0 | 0 | 1 |
-| Servo 45 degrees / Nano | 8 | 0 | 0 | 1 |
-| E-ink / ESP32 | 9 | 0 | 0 | 1 |
+| LED / Uno | 8 | 0 | 0 | 0 |
+| Servo 45 degrees / Nano | 7 | 0 | 0 | 0 |
+| E-ink / ESP32 | 8 | 0 | 0 | 0 |
 
 Each scenario searches once, reads native templates, saves once, checks once,
-starts one **test-only** build, reads its terminal status once and retrieves one
-controlled firmware artifact. E-ink also reads the real linked library example.
-The controlled owner completes before the single status request; these counts
+starts one **test-only** build, receives its terminal result in the same call and
+retrieves one controlled firmware artifact. E-ink also reads the real linked library example.
+The controlled owner completes within the bounded start wait; these counts
 do not predict real compiler polling or LLM latency. Pin coverage can remain
 partial, and no electrical behavior is certified. Test-only AVR callbacks do
 not extend the production offline owner's supported targets.
@@ -112,6 +112,81 @@ Validation recorded for this change:
 
 ```text
 test_agent.py:             Ran 31 tests — OK
-test_mcp_compact*.py:      Ran 133 tests — OK
-test_agent_opencode.py:    Ran 1 test — OK (real OpenCode, local deterministic model fixture)
+test_mcp_compact*.py:      Ran 146 tests — OK
 ```
+
+## Bounded start results and explicit success
+
+`build_project(action="start")` accepts `wait_seconds`, a number from 0 through
+60, defaulting to 20. The option is forbidden on `status`. A fast build returns
+its terminal result directly. Only `state="done"` **and** `success=true` establish
+compilation success; `ok=true` only means a valid tool response. Simulation
+remains unsupported.
+
+If the wait expires, the owner continues running and the response contains:
+
+```json
+{
+  "state": "running",
+  "stage": "queued",
+  "success": null,
+  "next_action": "call build_project status build_id=<returned build_id>"
+}
+```
+
+`stage` distinguishes queued admission from active compilation. A final result
+has `stage="complete"` and `state="done"`, `"error"` or `"interrupted"`.
+The wait holds no storage lock and neither timeout nor client cancellation
+cancels the owner. Different wait values reuse the same build identity.
+An explicit `wait_seconds=0` retains nonblocking admission without exposing a
+misleading public `pending` state.
+
+## Unusable Arduino sketches are errors
+
+`check_project` checks primary/`.ino` Arduino sources for collapsed single-line comments or
+directives, entirely commented-out code, absent active `setup()`/`loop()`
+definitions, and empty character literals such as `Serial.print(''Hello'')`.
+Definitions are checked across source tabs. Comments, quoted text, character
+literals and raw string literals do not count as function definitions. These
+checks also run when compiler-policy evidence is missing. They do not apply
+Arduino entry-point requirements to ESP-IDF or MicroPython.
+
+An issue includes the JSON pointer `path`, `file` (for example `sketch.ino`),
+`observed`, `expected`, and `next_action`. Errors precede warnings and informational
+messages in the bounded response. `status="invalid"` prevents build admission;
+the compiler callback is never entered for that snapshot. Empty board templates
+remain saveable starters but must receive real source before a build.
+
+This is a conservative lexical sanity check, not a C++ parser or preprocessor.
+It does not resolve conditional compilation, macro-generated callbacks, external
+headers or prove functional correctness. A passing structural report remains
+`partial`, and the actual compiler result is still required.
+
+## Read the first error before warnings
+
+Build responses place `first_error` before the diagnostic lists. It is either
+`null` or `{file, line, message, suggestion}`. The first error observed in the
+compiler stream is retained even if later output truncates the bounded log
+tail. Split log chunks and ANSI color sequences are handled. Generated-file
+line mappings remain explicitly unverified.
+
+Warnings, including `-Wcomment`, appear only in the separate `warnings` list,
+capped at five with `warnings_truncated`. They cannot displace a real error.
+The additional `diagnostics` list puts errors before notes and retains artifact
+provenance. If a failing compiler provides no parseable error, the response
+states that explicitly with a null location instead of inventing one. A compiler
+callback that claims success while emitting an error is rejected and publishes
+no firmware artifact.
+
+## Before/after deterministic counts
+
+| Scenario | Calls before | Calls now | Unexpected errors before/now | Repeated calls before/now |
+| --- | ---: | ---: | --- | --- |
+| LED / Uno | 9 | 8 | 0 / 0 | 0 / 0 |
+| Servo / Nano | 8 | 7 | 0 / 0 | 0 / 0 |
+| E-ink / ESP32 | 9 | 8 | 0 / 0 | 0 / 0 |
+
+Each fast controlled build saves exactly one status call. The scenario client
+still supports a follow-up status request when `start` is non-terminal. These
+are deterministic contract measurements, not a claim about real model latency
+or real compilation. No real Qwen endpoint is used.

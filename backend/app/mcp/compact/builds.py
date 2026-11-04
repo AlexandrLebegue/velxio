@@ -6,13 +6,14 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import PurePosixPath
 import re
 import uuid
 
 from .checks import LibraryInventory
 from .projects import DIR_FLAGS, MAX_PROJECT_BYTES, ProjectStore, canonical, fail, filename
 from .contracts import MAX_RESPONSE_BYTES
+from .catalog import CatalogError
+from .diagnostics import capture, diagnostics, first_error
 
 OWNER_BLOCKER = ("REST owner bridge required: bind the existing build_queue.lane_for and an offline/no-install compile callback "
                  "in the route owner's event loop. _run_compile currently calls ensure_core_for_board; no such safe production hook is wired here.")
@@ -211,6 +212,11 @@ class BuildService:
         if any(i["code"] == "dependency_absent" and i["path"].startswith(f"/boards/{bi}/") for i in report["issues"]):
             fail("dependency_unavailable", "Dependency is absent from the verified inventory; installation is forbidden")
         if report["structure_status"] != "valid":
+            issue = next((item for item in report['issues'] if item['severity'] == 'error' and 'file' in item), None)
+            if issue:
+                error = CatalogError('project_invalid', issue['message'])
+                error.details = {key: issue[key] for key in ('path', 'file', 'observed', 'expected', 'next_action')}
+                raise error
             fail("project_invalid", "Structural preflight failed; report artifact: " + checked["diagnostic_artifact_id"])
         libraries = board.get("libraries")
         inventory = report.get("inventory")
@@ -251,6 +257,13 @@ class BuildService:
         return request, provenance
 
     async def build_project(self, **arguments):
+        arguments = dict(arguments)
+        has_wait = 'wait_seconds' in arguments
+        wait_seconds = arguments.pop('wait_seconds', 20)
+        if (type(wait_seconds) not in (int, float) or not 0 <= wait_seconds <= 60
+                or has_wait and arguments.get('action') != 'start'):
+            return {'ok': False, 'error': {'code': 'invalid_argument', 'message': 'wait_seconds must be a finite number from 0 to 60, for start only'}}
+        deadline = asyncio.get_running_loop().time() + wait_seconds
         def operation():
             action = arguments.get("action")
             if action == "status" and set(arguments) == {"action", "build_id"}:
@@ -300,7 +313,19 @@ class BuildService:
             task = asyncio.create_task(self._run(build_id, request, adapter=self.adapter))
             self.tasks[build_id] = task
             return self._status(job)
-        return self.store._response(operation)
+        result = self.store._response(operation)
+        if result.get('ok') and arguments.get('action') == 'start':
+            task = self.tasks.get(result['build_id'])
+            if task is not None and not task.done() and wait_seconds:
+                # asyncio.wait does not cancel the owner on timeout or caller
+                # cancellation, and no filesystem lock is held across this wait.
+                await asyncio.wait({task}, timeout=max(0, deadline - asyncio.get_running_loop().time()))
+            build_id = result['build_id']
+            def refreshed():
+                with self.store._locked(False) as root:
+                    return self._status(self._job(root, build_id))
+            result = self.store._response(refreshed)
+        return result
 
     def _event(self, build_id, *, running=False, log=None):
         self._ensure_owner()
@@ -313,6 +338,7 @@ class BuildService:
             if log is not None:
                 if not isinstance(log, str):
                     fail("invalid_compiler_result", "Compiler logs must be UTF-8 text")
+                capture(job, log)
                 try:
                     old = self.store._read(build, "live.log", 1024 * 1024)
                 except FileNotFoundError:
@@ -338,11 +364,18 @@ class BuildService:
             log_artifact = self.store._build_blob(root, build, job, "build_log", log)
             job["artifacts"] = [log_artifact]
             request = json.loads(self.store._read(build, "input.json", 8 * 1024 * 1024))
-            job["diagnostics"], job["diagnostics_truncated"] = diagnostics(log, log_artifact, request)
+            capture(job, '', final=True)
+            job["diagnostics"], job["diagnostics_truncated"], job['warnings'], job['warnings_truncated'] = diagnostics(log, log_artifact, request)
+            if not job.get('first_error'):
+                row = next((row for row in job['diagnostics'] if row['severity'] == 'error'), None)
+                if row:
+                    job['first_error'] = first_error(row)
             if result is not None:
                 if not isinstance(result, dict) or type(result.get("success")) is not bool:
                     fail("invalid_compiler_result", "Adapter result must provide boolean success")
                 if result["success"]:
+                    if job.get('first_error'):
+                        fail('invalid_compiler_result', 'Compiler claimed success despite an error in its output')
                     if not isinstance(result.get("firmware"), bytes) or not result["firmware"]:
                         fail("invalid_compiler_result", "Successful adapter result requires firmware bytes")
                     if result.get("firmware_type", "bin") not in ("bin", "hex", "uf2", "elf"):
@@ -386,10 +419,28 @@ class BuildService:
         result.update(ok=True, project_id=job["project_id"], version=job["version"], board_id=job["board_id"],
                       reproducibility_limited=True, shared_cache_allowed=False, diagnostics=job["diagnostics"][:10],
                       diagnostics_truncated=job["diagnostics_truncated"] or len(job["diagnostics"]) > 10)
+        active = job['state'] in ('pending', 'running')
+        if active:
+            result.update(state='running', success=None, stage='queued' if job['state'] == 'pending' else 'compiling',
+                          next_action='call build_project status build_id=' + job['build_id'])
+        else:
+            result.update(stage='complete', next_action='Build finished; compilation only, no simulation.' if job.get('success') else
+                          'Fix first_error, save a new project version and call build_project start again.')
+        legacy_warnings = [row for row in result['diagnostics'] if row.get('severity') == 'warning']
+        result['diagnostics'] = sorted((row for row in result['diagnostics'] if row.get('severity') != 'warning'),
+                                       key=lambda row: row.get('severity') != 'error')
+        warnings = job.get('warnings', legacy_warnings)
+        result.update(warnings=warnings[:5], warnings_truncated=job.get('warnings_truncated', False) or len(warnings) > 5)
+        error = job.get('first_error')
+        if not error and not active and job.get('success') is not True:
+            error = {'file': None, 'line': None, 'message': ('Build did not succeed: ' + str(job.get('error_kind') or job['state']) + '; no parsed compiler error is available.')[:240],
+                     'suggestion': 'Read the build_log artifact and resolve the reported failure before rebuilding.'}
+        result['first_error'] = error
         while len(canonical(result)) > MAX_RESPONSE_BYTES and result["diagnostics"]:
             result["diagnostics"].pop()
             result["diagnostics_truncated"] = True
-        return result
+        return {'ok': result.pop('ok'), 'build_id': result.pop('build_id'), 'state': result.pop('state'),
+                'success': result.pop('success'), 'first_error': result.pop('first_error'), **result}
 
     async def close(self):
         if self.adapter is None or self.adapter.test_only:
@@ -403,28 +454,3 @@ class BuildService:
             os.close(self.lease)
             self.lease = None
         self.closed = True
-
-
-def diagnostics(raw, artifact, request):
-    rows = []
-    count = 0
-    files = request["files"]
-    inos = [f for f in files if f["name"].endswith(".ino")]
-    primary = next((f["name"] for f in inos if f["name"] == "sketch.ino"), inos[0]["name"] if inos else files[0]["name"] if files else None)
-    for index, line in enumerate(raw.decode("utf8").splitlines(), 1):
-        match = re.match(r"(.+?):([0-9]{1,10})(?::([0-9]{1,10}))?:\s*(fatal error|error|warning|note):\s*(.*)", line)
-        if not match:
-            continue
-        count += 1
-        if len(rows) >= 100:
-            continue
-        name, number, column, severity, message = match.groups()
-        name = name.replace("\\", "/")
-        base = PurePosixPath(name).name
-        known = next((f["name"] for f in files if f["name"] == name), None)
-        rows.append({"file": (known or base)[:240], "file_known": known is not None, "line": int(number),
-                     "column": int(column) if column else None, "severity": "error" if severity == "fatal error" else severity,
-                     "message": message[:240], "source": "compiler_log", "log_line": index,
-                     "artifact_id": artifact["id"], "log_sha256": artifact["sha256"],
-                     "source_file_hint": primary if base == "sketch.ino.cpp" else known, "line_mapping_verified": False})
-    return rows, count > len(rows)

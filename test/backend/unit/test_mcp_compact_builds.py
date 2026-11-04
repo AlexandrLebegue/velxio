@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -82,7 +83,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
 
     async def start(self, saved=None, service=None, board_id="esp"):
         saved = saved or self.save()
-        return await (service or self.service).build_project(action="start", project_id=saved["project_id"], version=saved["version"], board_id=board_id)
+        return await (service or self.service).build_project(action="start", project_id=saved["project_id"], version=saved["version"], board_id=board_id, wait_seconds=0)
 
     async def done(self, result, service=None):
         service = service or self.service
@@ -128,6 +129,111 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.gate.entered, 0)
         self.assertEqual(self.requests, [])
         self.assertIsNone(self.service.lease)
+
+    async def test_start_wait_returns_terminal_success_and_error_without_polling(self):
+        from jsonschema import validate, ValidationError
+        from app.mcp.compact import TOOL_SCHEMAS
+        saved = self.save()
+        result = await self.service.build_project(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp')
+        self.assertEqual(result['state'], 'done')
+        self.assertTrue(result['success'])
+        self.assertIsNone(result['first_error'])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(result['stage'], 'complete')
+        validate(result, TOOL_SCHEMAS['build_project']['outputSchema'])
+        with self.assertRaises(ValidationError):
+            validate({**result, 'success': False}, TOOL_SCHEMAS['build_project']['outputSchema'])
+        self.output = {'success': False, 'error_kind': 'syntax_error'}
+        self.log = 'main.c:2: warning: comment [-Wcomment]\nmain.c:7:3: error: expected semicolon\n'
+        saved = self.save()
+        failed = await self.service.build_project(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp')
+        self.assertEqual(failed['state'], 'error')
+        self.assertFalse(failed['success'])
+        self.assertEqual(failed['first_error']['line'], 7)
+        self.assertIn('suggestion', failed['first_error'])
+        self.assertEqual(failed['diagnostics'][0]['severity'], 'error')
+        self.assertEqual(failed['warnings'][0]['severity'], 'warning')
+
+    async def test_wait_deadline_keeps_owner_alive_and_exposes_exact_next_action(self):
+        self.release = asyncio.Event()
+        saved = self.save()
+        result = await self.service.build_project(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp', wait_seconds=.01)
+        self.assertEqual(result['state'], 'running')
+        self.assertIsNone(result['success'])
+        self.assertEqual(result['next_action'], 'call build_project status build_id=' + result['build_id'])
+        from jsonschema import validate
+        from app.mcp.compact import TOOL_SCHEMAS
+        validate(result, TOOL_SCHEMAS['build_project']['outputSchema'])
+        self.assertFalse(self.service.tasks[result['build_id']].cancelled())
+        self.release.set()
+        self.assertTrue((await self.done(result))['success'])
+
+    async def test_cancelling_waiter_does_not_cancel_build(self):
+        self.release = asyncio.Event()
+        saved = self.save()
+        waiter = asyncio.create_task(self.service.build_project(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp', wait_seconds=60))
+        while not self.requests:
+            await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        task = next(iter(self.service.tasks.values()))
+        self.assertFalse(task.cancelled() or task.done())
+        self.release.set()
+        await task
+        status = await self.service.build_project(action='status', build_id=next(iter(self.service.tasks)))
+        self.assertTrue(status['success'])
+
+    async def test_wait_validation_bounds_and_default_do_not_change_build_identity(self):
+        saved = self.save()
+        args = dict(action='start', project_id=saved['project_id'], version=saved['version'], board_id='esp')
+        for value in (-1, 61, True, float('nan'), float('inf'), '20'):
+            result = await self.service.build_project(**args, wait_seconds=value)
+            self.assertEqual(result['error']['code'], 'invalid_argument')
+        self.assertEqual(self.requests, [])
+        with patch('app.mcp.compact.builds.asyncio.wait', new=AsyncMock(return_value=(set(), set()))) as wait:
+            first = await self.service.build_project(**args)
+            self.assertLessEqual(wait.call_args.kwargs['timeout'], 20)
+            self.assertGreater(wait.call_args.kwargs['timeout'], 19)
+            second = await self.service.build_project(**args, wait_seconds=60)
+            self.assertGreater(wait.call_args.kwargs['timeout'], 59)
+        self.assertEqual(first['build_id'], second['build_id'])
+        forbidden = await self.service.build_project(action='status', build_id=first['build_id'], wait_seconds=0)
+        self.assertEqual(forbidden['error']['code'], 'invalid_argument')
+        await self.done(first)
+        self.assertEqual(len(self.requests), 1)
+
+    async def test_warning_flood_never_hides_first_error_including_truncated_log(self):
+        self.output = {'success': False, 'error_kind': 'syntax_error'}
+        self.log = 'main.c:3: error: FIRST REAL ERROR\n' + 'main.c:8: warning: comment [-Wcomment]\n' * 40000 + 'main.c:9: error: SECOND ERROR\n'
+        result = await self.done(await self.start())
+        self.assertTrue(result['log_truncated'])
+        self.assertEqual(result['first_error']['message'], 'FIRST REAL ERROR')
+        self.assertEqual(result['first_error']['line'], 3)
+        self.assertLessEqual(len(result['warnings']), 5)
+        self.assertTrue(result['warnings_truncated'])
+        self.assertTrue(all(row['severity'] != 'warning' for row in result['diagnostics']))
+
+    async def test_split_error_line_and_false_compiler_success_are_not_reported_as_success(self):
+        async def inconsistent(request, log):
+            log('main.c:4: err')
+            log('or: broken expression')
+            return {'success': True, 'firmware': b'CONTROLLED FALSE SUCCESS'}
+        self.adapter.compile_offline = inconsistent
+        result = await self.done(await self.start())
+        self.assertFalse(result['success'])
+        self.assertEqual(result['state'], 'error')
+        self.assertEqual(result['first_error']['message'], 'broken expression')
+        self.assertFalse(any(item['kind'] == 'firmware' for item in result['artifacts']))
+
+    async def test_unusable_sketch_is_refused_with_actionable_preflight_before_owner(self):
+        doc = document()
+        doc['boards'][0]['languageMode'] = 'arduino'
+        doc['fileGroups']['g/a~b'] = [{'name': 'sketch.ino', 'content': '// void setup() {} void loop() {}'}]
+        result = await self.start(self.save(doc))
+        self.assertEqual(result['error']['code'], 'project_invalid')
+        self.assertEqual(result['error']['file'], 'sketch.ino')
+        self.assertIn('check_project', result['error']['next_action'])
+        self.assertEqual(self.requests, [])
 
     async def test_exact_v1_native_subset_after_v2_and_no_payload_in_status(self):
         original = document()
@@ -219,8 +325,10 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         self.log = "é" * 600000 + "\n" + "main.c:2: warning: CONTROLLED repeated\n" * 120
         result = await self.done(await self.start())
         self.assertTrue(result["log_truncated"])
-        self.assertTrue(result["diagnostics_truncated"])
-        self.assertEqual(len(result["diagnostics"]), 10)
+        self.assertTrue(result["warnings_truncated"])
+        self.assertEqual(len(result["warnings"]), 5)
+        self.assertTrue(result["warnings_truncated"])
+        self.assertEqual(result["diagnostics"], [])
         log = next(a for a in result["artifacts"] if a["kind"] == "build_log")
         self.assertLessEqual(log["size_bytes"], 1024 * 1024)
         self.read(log, "utf8").decode("utf8")
@@ -273,7 +381,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         result = await self.start()
         await asyncio.sleep(0)
         status = await self.service.build_project(action="status", build_id=result["build_id"])
-        self.assertEqual(status["state"], "pending")
+        self.assertEqual(status["state"], "running")
         other = BuildService(self.store, self.checker, adapter=self.adapter, toolchains=self.tools)
         self.addAsyncCleanup(other.close)
         refused = await self.start(service=other)
@@ -314,7 +422,7 @@ class BuildTests(unittest.IsolatedAsyncioTestCase):
         result = await self.start()
         await asyncio.sleep(0)
         self.assertFalse(self.requests)
-        self.assertEqual((await self.service.build_project(action="status", build_id=result["build_id"]))["state"], "pending")
+        self.assertEqual((await self.service.build_project(action="status", build_id=result["build_id"]))["state"], "running")
         release.set()
         await asyncio.gather(*holders)
         self.assertEqual((await self.done(result))["state"], "done")
