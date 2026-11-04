@@ -1,31 +1,31 @@
 # LED (led)
-Statut : complet
-Tag Wokwi : wokwi-led
+Status: complete
+Wokwi tag: wokwi-led
 
 ## Pins
-| broche | rôle | connexion typique |
+| pin | role | typical connection |
 |---|---|---|
-| A | Anode (pin positive) | Vers 5V par l'intermédiaire d'une résistance série (~220-330 Ω) |
-| C | Cathode (pin négative) | GND |
+| A | Anode (positive pin) | To 5V through a series resistor (~220-330 ohm) |
+| C | Cathode (negative pin) | GND |
 
 ## Attributes
-| attribut | type | défaut | rôle |
+| attribute | type | default | role |
 |---|---|---|---|
-| value | bool | False | État de la LED (éteinte / allumée) |
-| brightness | number | 1 | Intensité lumineuse affichée |
-| color | string | 'red' | Couleur du boîtier (red, green, blue, white, yellow, hex...) |
-| lightColor | string | None | Couleur de la lumière (défaut : dérivée de color) |
-| label | string | '' | Texte affiché sous la LED |
-| flip | bool | False | Retourne la LED horizontalement |
+| value | bool | False | LED state (off / on) |
+| brightness | number | 1 | Light intensity shown |
+| color | string | 'red' | LED body color (red, green, blue, white, yellow, hex...) |
+| lightColor | string | None | Color of the emitted light (default derived from color) |
+| label | string | '' | Text displayed below the LED |
+| flip | bool | False | Flips the LED horizontally |
 
 ## Wiring
-- Arduino Uno : A -> broche 13 (via R série 330 Ω), C -> GND
-- ESP32 : A -> GPIO 2 (via R série 330 Ω), C -> GND
+- Arduino Uno: A -> pin 13 (via 330 ohm series R), C -> GND
+- ESP32: A -> GPIO 2 (via 330 ohm series R), C -> GND
 
 ## Minimal sketch
-Non compilé.
+Not compiled.
 ```cpp
-// LED : allumage / extinction, puis demi-brillance en PWM
+// LED: on/off blinking, then 50% PWM brightness
 const int PIN_LED = 13;
 
 void setup() {
@@ -34,11 +34,11 @@ void setup() {
 }
 
 void loop() {
-  digitalWrite(PIN_LED, HIGH);  // allumée
+  digitalWrite(PIN_LED, HIGH);  // on
   delay(500);
-  digitalWrite(PIN_LED, LOW);   // éteinte
+  digitalWrite(PIN_LED, LOW);   // off
   delay(500);
-  analogWrite(PIN_LED, 128);    // 50 % (broche PWM uniquement)
+  analogWrite(PIN_LED, 128);    // 50% (PWM-capable pin only)
   delay(500);
   analogWrite(PIN_LED, 0);
   delay(500);
@@ -46,11 +46,11 @@ void loop() {
 ```
 
 ## Pitfalls
-- Toujours placer une résistance série (220-330 Ω) entre la broche de sortie et A : sans elle la LED court-circuite le pin.
-- Respecter la polarité : A vers le haut (côté pin), C vers GND ; inversée, la LED ne s'allume pas.
-- analogWrite() ne module la luminosité que sur les broches capables de PWM (Uno : 3, 5, 6, 9, 10, 11).
-- Wokwi applique une correction gamma (2.8 par défaut) : un petit duty cycle PWM paraît plus lumineux qu'en réel.
+- Always put a series resistor (220-330 ohm) between the output pin and A: without it the LED shorts the pin.
+- Mind the polarity: A toward the high side, C to GND; reversed, the LED stays dark.
+- analogWrite() only dims the LED on pins that support PWM (Uno: 3, 5, 6, 9, 10, 11).
+- Wokwi applies gamma correction (default 2.8): a small PWM duty cycle looks brighter than on real hardware.
 
 ## Sources
-- https://docs.wokwi.com/parts/wokwi-led : noms de pins A/C, attributs color/lightColor/label/flip, correction gamma.
-- Exemples du dépôt (frontend/src/data/examples-circuits.ts) : fil A -> résistance série 330 Ω, C -> GND.
+- https://docs.wokwi.com/parts/wokwi-led: A/C pin names, color/lightColor/label/flip attributes, gamma correction.
+- Repo examples (frontend/src/data/examples-circuits.ts): A -> 330 ohm series resistor, C -> GND.

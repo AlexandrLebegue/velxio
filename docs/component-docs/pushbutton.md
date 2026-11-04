@@ -1,29 +1,29 @@
 # Pushbutton (pushbutton)
-Statut : complet
-Tag Wokwi : wokwi-pushbutton
+Status: complete
+Wokwi tag: wokwi-pushbutton
 
 ## Pins
-| broche | rôle | connexion typique |
+| pin | role | typical connection |
 |---|---|---|
-| 1.l / 1.r | Premier contact (côté gauche / droit, toujours reliés) | Pin digital en INPUT_PULLUP |
-| 2.l / 2.r | Deuxième contact (côté gauche / droit, toujours reliés) | GND |
+| 1.l / 1.r | First contact (left / right side, always tied together) | Digital pin set to INPUT_PULLUP |
+| 2.l / 2.r | Second contact (left / right side, always tied together) | GND |
 
 ## Attributes
-| attribut | type | défaut | rôle |
+| attribute | type | default | role |
 |---|---|---|---|
-| color | string | 'red' | Couleur du bouton |
-| pressed | bool | False | État physique (libéré / enfoncé) |
-| label | string | '' | Texte affiché sous le bouton |
-| xray | bool | False | Affiche le câblage interne |
+| color | string | 'red' | Button color |
+| pressed | bool | False | Physical state (released / pressed) |
+| label | string | '' | Text displayed below the button |
+| xray | bool | False | Shows the internal wiring |
 
 ## Wiring
-- Arduino Uno : 1.l -> broche 2 (pin en INPUT_PULLUP), 2.l -> GND
-- ESP32 : 1.l -> GPIO 4 (pin en INPUT_PULLUP), 2.l -> GND
+- Arduino Uno: 1.l -> pin 2 (pin set to INPUT_PULLUP), 2.l -> GND
+- ESP32: 1.l -> GPIO 4 (pin set to INPUT_PULLUP), 2.l -> GND
 
 ## Minimal sketch
-Non compilé.
+Not compiled.
 ```cpp
-// Bouton debouncé sur pin pull-up haut : pilote une LED
+// Pull-up button driving an LED (reads LOW while pressed)
 const int PIN_BTN = 2;
 const int PIN_LED = 13;
 
@@ -33,7 +33,7 @@ void setup() {
 }
 
 void loop() {
-  if (digitalRead(PIN_BTN) == LOW) {  // bouton enfoncé
+  if (digitalRead(PIN_BTN) == LOW) {  // pressed
     digitalWrite(PIN_LED, HIGH);
   } else {
     digitalWrite(PIN_LED, LOW);
@@ -42,11 +42,11 @@ void loop() {
 ```
 
 ## Pitfalls
-- Wokwi simule le rebond mécanique par défaut : prévoir un debounce logiciel (délai ou flanc) dans le sketch.
-- Avec INPUT_PULLUP, le bouton lit LOW quand il est enfoncé ; ne pas ajouter de résistance externe.
-- Les deux pins d'un même contact (1.l et 1.r) sont équivalents : le choix est purement de commodité de câblage.
-- L'attribut xray="1" dans le simulateur montre les contacts internes (utile pour comprendre le schéma).
+- Wokwi simulates contact bouncing by default: add software debouncing in the sketch (or set the bounce="0" attribute in the simulator).
+- With INPUT_PULLUP the button reads LOW while pressed; no external resistor is needed.
+- The two pins of the same contact (1.l and 1.r) are electrically identical: the choice is purely for layout convenience.
+- The xray="1" attribute in the simulator shows the internal contacts (useful to understand the diagram).
 
 ## Sources
-- https://docs.wokwi.com/parts/wokwi-pushbutton : contacts 1/2 (pins .l/.r), pattern INPUT_PULLUP + GND, rebond simulé.
-- Exemples du dépôt (frontend/src/data/examples-circuits.ts) : 1.l -> pin 2, 2.l -> GND.
+- https://docs.wokwi.com/parts/wokwi-pushbutton: contacts 1/2 (pins .l/.r), INPUT_PULLUP + GND pattern, simulated bounce.
+- Repo examples (frontend/src/data/examples-circuits.ts): 1.l -> pin 2, 2.l -> GND.

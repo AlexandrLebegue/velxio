@@ -1,31 +1,31 @@
 # RGB Led (rgb-led)
-Statut : complet
-Tag Wokwi : wokwi-rgb-led
+Status: complete
+Wokwi tag: wokwi-rgb-led
 
 ## Pins
-| broche | rôle | connexion typique |
+| pin | role | typical connection |
 |---|---|---|
-| R | Canale rouge | Vers la carte via résistance série (~220 Ω) |
-| G | Canale vert | Vers la carte via résistance série (~220 Ω) |
-| B | Canale bleu | Vers la carte via résistance série (~220 Ω) |
-| COM | Broche commune | GND (cathode commune) ou 5V (anode commune) |
+| R | Red channel | To the board through a series resistor (~220 ohm) |
+| G | Green channel | To the board through a series resistor (~220 ohm) |
+| B | Blue channel | To the board through a series resistor (~220 ohm) |
+| COM | Common pin | GND (common cathode) or 5V (common anode) |
 
 ## Attributes
-| attribut | type | défaut | rôle |
+| attribute | type | default | role |
 |---|---|---|---|
-| ledRed | number | 0 | Intensité du canal rouge |
-| ledGreen | number | 0 | Intensité du canal vert |
-| ledBlue | number | 0 | Intensité du canal bleu |
-| common | string | 'anode' | Polarité du pin COM : "anode" ou "cathode" |
+| ledRed | number | 0 | Red channel intensity |
+| ledGreen | number | 0 | Green channel intensity |
+| ledBlue | number | 0 | Blue channel intensity |
+| common | string | 'anode' | COM pin polarity: "anode" or "cathode" |
 
 ## Wiring
-- Arduino Uno : R -> broche 9 (via R 220 Ω), G -> broche 10 (via R 220 Ω), B -> broche 11 (via R 220 Ω), COM -> GND
-- ESP32 : R -> GPIO 5 (via R 220 Ω), G -> GPIO 18 (via R 220 Ω), B -> GPIO 19 (via R 220 Ω), COM -> GND
+- Arduino Uno: R -> pin 9 (via 220 ohm R), G -> pin 10 (via 220 ohm R), B -> pin 11 (via 220 ohm R), COM -> GND
+- ESP32: R -> GPIO 5 (via 220 ohm R), G -> GPIO 18 (via 220 ohm R), B -> GPIO 19 (via 220 ohm R), COM -> GND
 
 ## Minimal sketch
-Non compilé.
+Not compiled.
 ```cpp
-// LED RGB a cathode commune : rouge, vert, bleu en PWM
+// Common-cathode RGB LED: red, green, blue via PWM
 const int PIN_R = 9, PIN_G = 10, PIN_B = 11;
 
 void setup() {
@@ -35,15 +35,15 @@ void setup() {
 }
 
 void loop() {
-  analogWrite(PIN_R, 255);  // rouge
+  analogWrite(PIN_R, 255);  // red
   analogWrite(PIN_G, 0);
   analogWrite(PIN_B, 0);
   delay(500);
-  analogWrite(PIN_R, 0);    // vert
+  analogWrite(PIN_R, 0);    // green
   analogWrite(PIN_G, 255);
   analogWrite(PIN_B, 0);
   delay(500);
-  analogWrite(PIN_R, 0);    // bleu
+  analogWrite(PIN_R, 0);    // blue
   analogWrite(PIN_G, 0);
   analogWrite(PIN_B, 255);
   delay(500);
@@ -51,10 +51,10 @@ void loop() {
 ```
 
 ## Pitfalls
-- Une résistance série par canal (~220 Ω) : ne jamais relier deux canaux à la même résistance.
-- Vérifier le type de pin commun : anode = COM vers 5V et sorties basses ; cathode = COM vers GND et sorties hautes.
-- En Wokwi, l'attribut common change la polarité simulée : le mettre à "cathode" si COM est câblé sur GND (valeurs PWM inversées).
+- One series resistor per channel (~220 ohm): never share a single resistor between two channels.
+- Check the common pin type: anode = COM to 5V with low-side drive; cathode = COM to GND with high-side drive.
+- In Wokwi, the common attribute changes the simulated polarity: set it to "cathode" when COM is wired to GND (PWM values inverted).
 
 ## Sources
-- https://docs.wokwi.com/parts/wokwi-rgb-led : pins R/G/B/COM, attribut common (défaut "anode").
-- Exemples du dépôt (frontend/src/data/examples-100-days.ts) : un R 220 Ω par canal, COM -> GND.
+- https://docs.wokwi.com/parts/wokwi-rgb-led: R/G/B/COM pins, common attribute (default "anode").
+- Repo examples (frontend/src/data/examples-100-days.ts): one 220 ohm resistor per channel, COM -> GND.

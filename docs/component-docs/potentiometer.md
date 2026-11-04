@@ -1,32 +1,32 @@
 # Potentiometer (potentiometer)
-Statut : complet
-Tag Wokwi : wokwi-potentiometer
+Status: complete
+Wokwi tag: wokwi-potentiometer
 
 ## Pins
-| broche | rôle | connexion typique |
+| pin | role | typical connection |
 |---|---|---|
-| GND | Masse | GND de la carte |
-| SIG | Sortie du curseur | Pin d'entrée analogique (A0, A1, ...) |
-| VCC | Tension d'alimentation | 5V (Arduino) ou 3V3 (ESP32) |
+| GND | Ground | GND of the board |
+| SIG | Wiper output | Analog input pin (A0, A1, ...) |
+| VCC | Supply voltage | 5V (Arduino) or 3V3 (ESP32) |
 
 ## Attributes
-| attribut | type | défaut | rôle |
+| attribute | type | default | role |
 |---|---|---|---|
-| min | number | 0 | Valeur minimale du potentiomètre |
-| max | number | 1023 | Valeur maximale du potentiomètre |
-| value | number | 0 | Position courante du curseur (entre min et max) |
-| step | number | 1 | Incrément de la position |
-| startDegree | number | -135 | Angle du bouton au minimum (degrés) |
-| endDegree | number | 135 | Angle du bouton au maximum (degrés) |
+| min | number | 0 | Minimum value of the potentiometer |
+| max | number | 1023 | Maximum value of the potentiometer |
+| value | number | 0 | Current wiper position (between min and max) |
+| step | number | 1 | Position increment |
+| startDegree | number | -135 | Knob angle at the minimum (degrees) |
+| endDegree | number | 135 | Knob angle at the maximum (degrees) |
 
 ## Wiring
-- Arduino Uno : VCC -> 5V, GND -> GND, SIG -> A0
-- ESP32 : VCC -> 3V3, GND -> GND, SIG -> GPIO 34 (A0)
+- Arduino Uno: VCC -> 5V, GND -> GND, SIG -> A0
+- ESP32: VCC -> 3V3, GND -> GND, SIG -> GPIO 34 (A0)
 
 ## Minimal sketch
-Non compilé.
+Not compiled.
 ```cpp
-// Potentiometer : lit A0 et module la luminosité d'une LED PWM
+// Potentiometer: reads A0 and modulates an LED's PWM brightness
 const int PIN_POT = A0;
 const int PIN_LED = 3;
 
@@ -37,7 +37,7 @@ void setup() {
 }
 
 void loop() {
-  int value = analogRead(PIN_POT);      // 0..1023 sur Uno
+  int value = analogRead(PIN_POT);   // 0..1023 on the Uno
   int brightness = map(value, 0, 1023, 0, 255);
   analogWrite(PIN_LED, brightness);
   Serial.println(value);
@@ -46,11 +46,11 @@ void loop() {
 ```
 
 ## Pitfalls
-- Brancher VCC et GND même si Wokwi tolère de ne pas le faire (le comportement pourra changer).
-- Sur ESP32, l'ADC renvoie 0..4095 (12 bits) au lieu de 0..1023 : adapter les bornes de map().
-- Les pins analogiques de l'ESP32 sont les GPIO 32-39, dont 34-39 en entrée uniquement.
-- Pour convertir en volts : valeur * (VCC / 1023) sur Uno (5V), valeur * (VCC / 4095) sur ESP32.
+- Connect VCC and GND even though Wokwi tolerates leaving them unconnected (behavior may change later).
+- On the ESP32 the ADC returns 0..4095 (12 bits) instead of 0..1023: adjust the map() bounds.
+- The ESP32 analog pins are GPIO 32-39, of which 34-39 are input-only.
+- To convert to volts: value * (VCC / 1023) on the Uno (5V), value * (VCC / 4095) on the ESP32.
 
 ## Sources
-- https://docs.wokwi.com/parts/wokwi-potentiometer : pins GND/SIG/VCC, attribut value (0-1023), exemple analogRead() sur A0.
-- Exemples du dépôt (frontend/src/data/examples-100-days.ts) : VCC -> 3V3, GND -> GND, SIG -> pin analogique.
+- https://docs.wokwi.com/parts/wokwi-potentiometer: GND/SIG/VCC pins, value attribute (0-1023), analogRead() example on A0.
+- Repo examples (frontend/src/data/examples-100-days.ts): VCC -> 3V3, GND -> GND, SIG -> analog pin.
