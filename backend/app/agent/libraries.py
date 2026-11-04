@@ -190,11 +190,16 @@ async def resolve(files,declared,architecture,*,user=None,allow_install=False,hi
             names={v.get('name') for v in index if v.get('name') in (exact or hinted)
                    and ('*' in v.get('architectures',['*']) or architecture in v.get('architectures',[]))}
             if len(names)==1:
-                await select(next(iter(names)))
+                selected=await select(next(iter(names)))
                 names={v.name for v in available if header in v.headers and v.supports(architecture)}
                 if not names:
-                    raise dependency_error('library_header_missing','Installed package does not export '+header,header,
-                        'A package that actually provides this header')
+                    exported=sorted(selected.headers) if selected else []
+                    # Public top-level header names, not a workspace/cache path
+                    # or implementation API. This is installation evidence.
+                    exported=sorted({PurePosixPath(value).name for value in exported})[:12]
+                    raise dependency_error('library_header_missing','Installed '+selected.name+' does not export '+header,header,
+                        'One of the verified exported headers',library=selected.name,exported_headers=exported,
+                        next_action='Correct the #include in your source using the exported_headers listed here, then call run() again. Keep the installed library; no server-directory read or driver rewrite is needed.')
         if len(names)==1:
             pending.append(next(iter(names)))
         elif len(names)>1:

@@ -67,6 +67,16 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Changing the sketch cannot repair',caught.exception.details['next_action'])
         installer.assert_awaited_once()
 
+    async def test_wrong_header_reports_verified_exports_instead_of_a_blind_library_switch(self):
+        installed=[lib('Display',['DisplayDriver.h','src/DisplayDriver.h'])]
+        with self.assertRaises(AgentError) as caught:
+            await resolve(source('#include <Display.h>\n'),[],'avr',allow_install=True,loader=lambda:installed,
+                index_loader=lambda:[{'name':'Display','version':'1.0','architectures':['avr']}])
+        self.assertEqual(caught.exception.code,'library_header_missing')
+        self.assertEqual(caught.exception.details['exported_headers'],['DisplayDriver.h'])
+        self.assertIn('Correct the #include',caught.exception.details['next_action'])
+        self.assertNotIn('/src',str(caught.exception.details))
+
     async def test_unknown_import_does_not_trigger_guessed_download(self):
         installer=AsyncMock()
         result=await resolve(source('#include <Unrelated.h>\n'),[],'avr',allow_install=True,

@@ -242,7 +242,7 @@ class AgentRuntime:
 
     def sync(self, session, document, expected_revision, base_revision=None):
         if session.busy and (not session.turns or session.turns[-1].get('status')=='running'):
-            raise AgentError("turn_running", "Stop the agent before synchronizing manual edits", 409)
+            raise AgentError("turn_running", "An agent turn is still running. Editor changes will synchronize automatically when it completes.", 409)
         document=checked_document(document)
         revision=base_revision or expected_revision
         if revision==session.workspace.revision:
@@ -309,6 +309,7 @@ class AgentRuntime:
                     "Use connect to batch native wires with start/end objects containing componentId and pinName; never invent pin names. "
                     "Write/edit code with native file tools. Preserve unrelated user code and files. "
                     "Then call run(): saving, circuit checks, compilation and supported simulation are handled internally. No separate create/save/check/build/reference tools or project/build IDs are needed. "
+                    "With the application compiler, run resolves real #include dependencies automatically; library_candidates are alternatives, not mandatory packages. Do not search server directories for libraries. "
                     "For compilation only use run(simulate=false). ESP32 simulation is unsupported; run compiles it and reports this limitation. "
                     "If pending, call run() again for progress; do not restart. Fix reported errors before retrying. "
                     "Only compilation.success=true for the current workspace proves compilation. Only confirmed=true acknowledges simulation startup. "

@@ -95,3 +95,20 @@ Pending application builds are polled without restarting; late results after
 source/configuration changes or cancellation never overwrite current firmware.
 Fresh model replay results are pending; deterministic success is not a model
 quality result.
+
+The first native-editor cycle-2 replays produced L1: 4 calls/0 errors/61.94 s,
+L2: 7/0/75.41 s, L3: 9/1 MCP error plus 1 denied native read/129.82 s.
+L1 started without Servo installed: the existing managed API installed Servo
+1.3.0, and the real application compiler produced firmware using `Servo.h`.
+Independent recompilation passed for L1/L2. An independent AVR firmware probe
+also measured L1's ~1007.5 us servo pulse and L2's ~543.4/1471.6/2399.4 us
+pulses at low/mid/high analog input. This verifies generated pin signals, not
+rendered motor movement. L3 eventually compiled after choosing an alternative
+OLED library; display and sensor runtime remain unverified.
+
+L3 exposed a useful generic correction: the model wrote `#include <U8g2.h>`,
+but the installed package exports `U8g2lib.h`. Missing-header errors now return
+bounded, verified public header names and direct the model to edit the include,
+instead of switching drivers or reading private server directories. No include
+is automatically rewritten. Tool/system descriptions explain automatic import
+resolution and distinguish optional library candidates from requirements.
