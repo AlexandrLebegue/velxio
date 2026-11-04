@@ -61,6 +61,70 @@
       "real_compiler_executed": false
     }
   ],
+  "named_wiring": [
+    {
+      "scenario": "led-uno",
+      "tool_calls": 8,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 3,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "servo-nano",
+      "tool_calls": 7,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 2,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    },
+    {
+      "scenario": "eink-esp32",
+      "tool_calls": 8,
+      "calls_by_tool": {
+        "search_catalog": 1,
+        "get_reference": 3,
+        "save_project": 1,
+        "check_project": 1,
+        "build_project": 1,
+        "read_artifact": 1
+      },
+      "unexpected_errors": 0,
+      "repeated_identical_calls": 0,
+      "build_status_polls": 0,
+      "controlled_build_callbacks": 1,
+      "simulation": "unsupported",
+      "test_only": true,
+      "real_compiler_executed": false
+    }
+  ],
+  "previous_optimized_calls": {
+    "led-uno": 5,
+    "servo-nano": 5,
+    "eink-esp32": 5
+  },
   "scenarios": [
     {
       "scenario": "led-uno",

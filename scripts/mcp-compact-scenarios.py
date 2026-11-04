@@ -66,7 +66,7 @@ class DeterministicClient:
         return result
 
 
-async def run_scenario(catalog, scenario, from_example=False):
+async def run_scenario(catalog, scenario, from_example=False, named_wiring=False):
     name, board_kind, parts, dependencies, code = scenario
     with tempfile.TemporaryDirectory(prefix='compact-contract-') as temporary:
         root = Path(temporary)
@@ -144,7 +144,12 @@ async def run_scenario(catalog, scenario, from_example=False):
                     epd = document['components'][0]['id']
                     document['wires'] = [wire(i, board['id'], pin, epd, target) for i, (pin, target) in enumerate([
                         ('18', 'SCK'), ('23', 'SDI'), ('5', 'CS'), ('17', 'DC'), ('16', 'RST'), ('4', 'BUSY'), ('3V3', 'VCC'), ('GND', 'GND')])]
-                saved = await client.call('save_project', document=document)
+                if named_wiring:
+                    connections = [f"{w['start']['componentId']}.{w['start']['pinName']} -> {w['end']['componentId']}.{w['end']['pinName']}" for w in document['wires']]
+                    document['wires'] = []
+                    saved = await client.call('save_project', document=document, connect=connections)
+                else:
+                    saved = await client.call('save_project', document=document)
             checked = await client.call('check_project', project_id=saved['project_id'], version=saved['version'])
             assert checked['structure_status'] == 'valid', (name, checked['issues'])
             assert not any(item['severity'] == 'error' for item in checked['issues'])
@@ -171,6 +176,8 @@ async def evaluate():
     return {'method': 'deterministic scripted client; strict six-tool schemas; controlled owner adapter',
             'real_llm_used': False, 'real_compiler_used': False,
             'baseline': [await run_scenario(catalog, scenario) for scenario in SCENARIOS],
+            'named_wiring': [await run_scenario(catalog, scenario, named_wiring=True) for scenario in SCENARIOS],
+            'previous_optimized_calls': {'led-uno': 5, 'servo-nano': 5, 'eink-esp32': 5},
             'scenarios': [await run_scenario(catalog, scenario, from_example=True) for scenario in SCENARIOS]}
 
 

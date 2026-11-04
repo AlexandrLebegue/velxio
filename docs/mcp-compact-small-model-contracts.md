@@ -292,3 +292,36 @@ firmware artifact. Search already supplies the accepted parameters, so a second
 reference read is unnecessary. The checked-in JSON includes both `baseline` and
 `scenarios`. These remain controlled contract tests with no real model,
 compiler, deployment or network dependency installation.
+
+### Named wiring (milestone 4e)
+
+Keep the six tools: `connect` is a `save_project` field, not another tool.
+Pass up to 128 strings such as `board.GPIO5 -> epd.CS` in the same save as a
+native document, plain sketch or example, or append a batch using only
+`project_id`, `expected_version` and `connect`. `board` selects the active board;
+other names are exact instance IDs (the longest matching ID wins). A native
+wire ID is generated; the saved document contains native instance IDs and pin
+names. The operation is atomic and retains compare-and-swap semantics.
+
+Pin lookup ignores case and accepts GPIO5/D5, GROUND, 3.3V/3V3, component
+CLK/SCLK, DIN/MOSI/SDA, RES/RESET, VDD, ANODE/CATHODE and servo SIG/SIGNAL/VCC.
+Uno/Nano SCK/MOSI/MISO/SDA/SCL resolve to their fixed board pins. Exact native
+names take priority. ESP32 RX2/16 and TX2/17 are compared as physical pins.
+Catalog pins are authoritative; explicit native profiles cover Uno, Nano, LED,
+resistor and servo where the packaged catalog lacks pins. Other undocumented
+parts fail with a request for pin documentation, never a guessed pin count.
+
+Nonexistent pins, self-connections, reverse/alias duplicates, power/ground/signal
+conflicts, input-only GPIOs driving inputs, and two e-paper signal roles on one
+net fail before publication. Errors identify the connection and list valid
+pins. Existing wires participate in duplicate and net validation. These are
+conservative structural role checks, not voltage, timing or electrical proof.
+
+The deterministic report now also exercises named wiring on LED/Uno,
+servo/Nano and e-paper/ESP32: 8, 7 and 8 calls respectively, the same as native
+manual authoring, with zero unexpected errors or repeated calls. The preferred
+example path remains 5 calls per scenario (previous optimized result: 5 each).
+No real model, compiler or simulator is executed.
+
+Validation for milestone 4e: `test_agent.py` — 31 tests OK;
+`test_mcp_compact*.py` — 161 tests OK, including five named-wiring tests.
