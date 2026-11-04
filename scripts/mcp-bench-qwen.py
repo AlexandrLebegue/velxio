@@ -102,14 +102,53 @@ def summarize(root):
                     if isinstance(value,(int,float)):tokens[key]+=value
         audit_file=path/'audit.json'; truth=json.loads(audit_file.read_text()) if audit_file.exists() else {}
         builds=[c['output'] for c in calls if c['name']=='build_project']
+        review_file=path/'review.json';review=json.loads(review_file.read_text()) if review_file.exists() else {}
+        verification_file=path/'session-verification.json';verification=json.loads(verification_file.read_text()) if verification_file.exists() else {}
         row.update(calls=len(calls),errors=dict(errors),error_count=sum(errors.values()),loops=[n for n in signatures.values() if n>=3],tokens=dict(tokens),
                    check_called=any(c['name']=='check_project' for c in calls),build_called=bool(builds),
                    final_build_read=any(b.get('state') in ('done','error','interrupted') and b.get('project_id')==truth.get('project_id') and b.get('version')==truth.get('version') for b in builds),
                    strict_success=truth.get('strict_success',False),reviewed=truth.get('review_bound',False),compile_ok=truth.get('compile_ok',False),
+                   false_success=review.get('false_success'),session_verified=verification.get('verified',False),
                    session_ids=list(dict.fromkeys(e['sessionID'] for e in events if e.get('sessionID'))))
         rows.append(row)
     ab.write_json(root/'summary.json',rows)
     return rows
+
+
+def verify_sessions(root):
+    """Read the existing OpenCode database, without making any model request."""
+    results=[]
+    for row in summarize(root):
+        if row['status']=='running':continue
+        proofs=[]
+        for session in row['session_ids']:
+            destination=root/row['run']/'session-export.json'
+            # A regular file avoids OpenCode truncating its stdout on exit.
+            with destination.open('w') as output:
+                subprocess.run(['opencode','export',session,'--pure'],stdout=output,stderr=subprocess.PIPE,check=True,timeout=45)
+            doc=json.loads(destination.read_text());messages=doc.get('messages',[])
+            infos=[m.get('info',m) for m in messages]
+            users=[m for m in infos if m.get('role')=='user']
+            models=sorted({(m.get('providerID',''),m.get('modelID','')) for m in infos if m.get('role')=='assistant'})
+            parts=[p.get('text','') for m in messages if m.get('info',m).get('role')=='user' for p in m.get('parts',[]) if p.get('type')=='text']
+            prompt=(HOLDOUTS if row['case'].startswith('V') else PROMPTS)[row['case']]
+            exact=parts in ([prompt],[json.dumps(prompt,ensure_ascii=False)])
+            proofs.append({'user_message_count':len(users),'models':models,'complete_prompt':exact,
+                           'verified':len(users)==1 and exact and models==[('hyperqwen','qwen3.8-27b')]})
+        proof={'sessions':proofs,'verified':len(proofs)==1 and proofs[0]['verified']}
+        ab.write_json(root/row['run']/'session-verification.json',proof)
+        results.append({'run':row['run'],**proof})
+    return results
+
+
+def final_saved(calls, events):
+    """Select the final declared project, excluding later disposable probes."""
+    saves=[c['output'] for c in calls if c['name']=='save_project' and c['output'].get('ok')]
+    if not saves:return None
+    texts=[e.get('part',{}).get('text','') for e in events if e.get('type')=='text' and e.get('part',{}).get('text','').strip()]
+    saved_ids={s['project_id'] for s in saves}
+    declared=next((p for p in re.findall(r'p_[0-9a-f]{32}',texts[-1] if texts else '') if p in saved_ids),None)
+    return next((s for s in reversed(saves) if s['project_id']==declared),saves[-1])
 
 
 def model_env(proxy_url=None):
@@ -142,9 +181,9 @@ def rpc(url, name, arguments):
 def remote_snapshot(url, root, label):
     # Only immutable project bytes are fetched; never a remote deployment or SSH.
     calls=ab.json_lines(root/label/'mcp.jsonl')
-    saves=[c['output'] for c in calls if c['name']=='save_project' and c['output'].get('ok')]
-    if not saves:return
-    saved=saves[-1];raw=bytearray();offset=0
+    saved=final_saved(calls,ab.json_lines(root/label/'opencode.jsonl'))
+    if saved is None:return
+    raw=bytearray();offset=0
     import base64
     while True:
         data=rpc(url,'read_artifact',{'artifact_id':saved['project_artifact_id'],'offset':offset,'length':12288,'encoding':'base64'})
@@ -254,10 +293,10 @@ def run_pass(args):
             else:
                 # Remote ESP32 compilation is reported by the actual remote
                 # owner; independent IDF recompilation belongs to that host.
-                saves=[c['output'] for c in ab.json_lines(run/'mcp.jsonl') if c['name']=='save_project' and c['output'].get('ok')]
+                saved=final_saved(ab.json_lines(run/'mcp.jsonl'),ab.json_lines(run/'opencode.jsonl'))
                 result={'case':'B6','strict_success':False,'independent_idf_required':True,'expected':EXPECTED['B6']}
-                if saves:
-                    saved=saves[-1];paths=list((run/'store').rglob(saved['project_id']+'/versions/'+saved['version']+'.vlx'))
+                if saved:
+                    paths=list((run/'store').rglob(saved['project_id']+'/versions/'+saved['version']+'.vlx'))
                     if paths:
                         doc=json.loads(paths[0].read_text());board=next(b for b in doc['boards'] if b['id']==doc['activeBoardId'])
                         source='\n'.join(f['content'] for f in doc['fileGroups'][board['activeFileGroupId']])
@@ -325,14 +364,16 @@ def report(parent, output):
       'Installed core, CLI and library sources are verified by real inventory hashes. Trusted local recipes; no claim of OS network isolation.',
       'Independent recompilation reads immutable stored source. Strict success additionally requires a version/source-bound manual review of wiring, exact values and code behavior.',
       'Compilation does not validate displayed pixels, motion, sensor accuracy or LED timing. C/W/V/S/B below mean compile/wiring/values/sketch/behavior.',
-      '', '| Pass/case | MCP | Errors by code | Loops >=3 | Tokens | Seconds | C/W/V/S/B | Strict | Final build read |',
+      'Errors count failed MCP replies by code; checker informational findings are separate. Tokens are provider-reported total sums, including reused context; loop counts are identical calls repeated at least three times.',
+      '', '| Pass/case | MCP | Errors by code | Loops >=3 | Tokens | Seconds | C/W/V/S/B | Strict | Check/build/final read |',
       '| --- | ---: | --- | --- | ---: | ---: | --- | --- | --- |']
     for row in allrows:
         root=next(root for root in roots if (root/row['run']/'run.json').exists())
         review_file=root/row['run']/'review.json';review=json.loads(review_file.read_text()) if review_file.exists() else {}
         flags='/'.join(('Y' if value is True else 'N' if value is False else '?') for value in [row['compile_ok'],*[review.get(k) for k in ('wiring','values','sketch','behavior')]])
         errors=', '.join(k+':'+str(v) for k,v in sorted(row['errors'].items())) or '0'
-        lines.append(f"| {row['run']} | {row['calls']} | {errors} | {row['loops']} | {row['tokens'].get('total','?')} | {row.get('seconds','running')} | {flags} | {str(row['strict_success']) if row['reviewed'] else 'pending review'} | {row['final_build_read']} |")
+        actions='/'.join('Y' if row[k] else 'N' for k in ('check_called','build_called','final_build_read'))
+        lines.append(f"| {row['run']} | {row['calls']} | {errors} | {row['loops']} | {row['tokens'].get('total','?')} | {row.get('seconds','running')} | {flags} | {str(row['strict_success']) if row['reviewed'] else 'pending review'} | {actions} |")
     lines+=['','## Pass scores and exact failure families']
     for root in roots:
         rows=[r for r in allrows if (root/r['run']/'run.json').exists() and r['case'] in ('B1','B2','B3','B4','B5')]
@@ -353,6 +394,10 @@ def report(parent, output):
       '- `825f95e9`: real AVR inventory/admission and regression bench. Genuine HTTP/MCP control returned done/success=true/test_only=false with a real HEX; 31 agent + 171 compact tests passed.']
     notes=parent/'cycle-notes.json'
     if notes.exists():lines.extend('- '+note for note in json.loads(notes.read_text()))
+    verified=[r for r in allrows if r['session_verified']]
+    assessed=[r for r in allrows if r['false_success'] is not None]
+    lines.append(f"- Database-export verification: {len(verified)}/{len(allrows)} runs confirm exactly one complete user prompt and the required provider/model; no extra model request is made by this check.")
+    lines.append(f"- False-success review: {sum(r['false_success'] is True for r in assessed)}/{len(assessed)} assessed conclusions contradicted by independent project evidence; unassessed={len(allrows)-len(assessed)}.")
     trace=[]
     for root in roots:
         file=root/'trace-analysis.json'
@@ -364,7 +409,8 @@ def report(parent, output):
       'Stop requires two consecutive complete qualifying passes, each with all five strict successes and at most three MCP errors per run. No unmeasured success is claimed.',
       'Only source-bound reviews count; valid JSON strings and numeric strings may be normalized, but incomplete arguments must not be guessed or silently repaired.',
       'Two reserved validation prompts V1/V2 are separate from tuning; their results will be reported only when run. Small sample, one model/harness, order and cache effects remain limitations.',
-      'B6-READY: `scripts/mcp-bench-qwen.py pass --cases B6 --mcp-url <explicit URL>`; intended for the remote owner on its IDF host. No ESP32 run is performed here.',
+      'The improvement bundle is measured together, without per-feature ablation: individual contributions and causal shares are not established. Prompt coverage cannot prove general reliability.',
+      'B6-READY: `python scripts/mcp-bench-qwen.py pass --pass-number 6 --evidence <private-output> --cases B6 --mcp-url <explicit-URL>`; intended for the remote owner on its IDF host. No ESP32 run is performed here.',
       'B6 checks exact quoted Hello World, centering logic and native CS5/DC17/RST16/BUSY4/SCK18/SDI23/3V3/GND; independent IDF recompilation remains required on that host. It is excluded from the five-case score.',
       'Raw HTTP bodies, sessions, snapshots and compiler logs remain outside Git; authorization headers and provider keys are never logged or committed.']
     if len(lines)>150:raise ValueError('Report would exceed 150 lines; curate the accumulated notes first')
@@ -384,12 +430,14 @@ def main():
     tr=sub.add_parser('trace-analysis');tr.add_argument('root',type=Path)
     rp=sub.add_parser('report');rp.add_argument('parent',type=Path);rp.add_argument('--output',type=Path,default=HERE.parent/'docs/mcp-bench-qwen-20261104.md')
     su=sub.add_parser('summary');su.add_argument('root',type=Path)
+    ve=sub.add_parser('verify-sessions');ve.add_argument('root',type=Path)
     args=p.parse_args()
     if args.action=='pass':run_pass(args)
     elif args.action=='proxy':proxy(args)
     elif args.action=='trace-analysis':print(json.dumps(analyze_trace(args.root),indent=2))
     elif args.action=='report':report(args.parent,args.output)
     elif args.action=='audit':print(json.dumps(audit(args.evidence,args.run,args.case,args.arduino_cli,args.toolchain),indent=2))
+    elif args.action=='verify-sessions':print(json.dumps(verify_sessions(args.root),indent=2))
     else:print(json.dumps(summarize(args.root),indent=2))
 
 if __name__=='__main__':main()
