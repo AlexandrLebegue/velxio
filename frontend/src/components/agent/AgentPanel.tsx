@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
-import { MessageSquare, Settings, X, Send, Square, Download, Plus } from 'lucide-react';
+import { MessageSquare, Settings, X, Send, Square, Download, FileJson, Plus } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useSimulatorStore } from '../../store/useSimulatorStore';
 import { registerEditorCommand } from '../../lib/editorCommands';
@@ -24,6 +24,10 @@ import { generateUUID } from '../../utils/uuid';
 import { reduceAgentEvent } from '../../services/agentEvents';
 import { synchronizeAgentSession } from '../../services/agentSync';
 import { AgentMessageBody, AgentTimeline } from './AgentTimeline';
+import {
+  agentDiscussionFilename,
+  buildAgentDiscussionExport,
+} from '../../services/agentDiscussionExport';
 import './AgentPanel.css';
 
 const defaults: AgentSettings = {
@@ -360,6 +364,24 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
     }
   }
 
+  async function exportDiscussion() {
+    if (!session) return;
+    try {
+      const latest = await agentRequest<AgentSession>(`/sessions/${session.id}`);
+      const payload = buildAgentDiscussionExport(latest, settings.model, new Date(), partial);
+      const url = URL.createObjectURL(
+        new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      );
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = agentDiscussionFilename(settings.model);
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
   return (
     <>
       {!open && (
@@ -408,6 +430,14 @@ export function AgentPanel({ onDockChange }: { onDockChange?: (width: number) =>
                 }}
               >
                 <Plus size={16} />
+              </button>
+              <button
+                type="button"
+                title={t('agent.exportDiscussion')}
+                disabled={!session}
+                onClick={() => void exportDiscussion()}
+              >
+                <FileJson size={16} />
               </button>
               <button
                 type="button"
