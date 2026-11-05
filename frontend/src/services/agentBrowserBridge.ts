@@ -85,6 +85,7 @@ export async function applyAgentSnapshot(
     }
     return structuredClone(buildVlxPayload());
   }
+  const boardMetadataBefore = new Map(sim.boards.map((board) => [board.id, { ...board }]));
   const circuitChanged =
     !agentValueEqual(current.components, candidate.components) ||
     !agentValueEqual(normalizeAgentDocument(current).wires, candidate.wires);
@@ -139,6 +140,9 @@ export async function applyAgentSnapshot(
       await flushElectricalResolve();
     } catch (error) {
       if ((await projectRevision()) === (await projectRevision(candidate))) {
+        // Roll back metadata too if mounting/reconciliation rejects the edit.
+        // Guarded by the candidate revision so newer manual edits stay intact.
+        for (const before of boardMetadataBefore.values()) sim.updateBoard(before.id, before);
         sim.applyCircuitState(current.components, normalizeAgentDocument(current).wires);
         useEditorStore.getState().replaceFileGroups(current.fileGroups, current.folderGroups);
       }

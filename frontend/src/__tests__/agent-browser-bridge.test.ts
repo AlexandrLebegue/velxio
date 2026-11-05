@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { webcrypto } from 'node:crypto';
+import * as circuit from '../services/agentCircuit';
 
 const fixture = vi.hoisted(() => {
   const board = {
@@ -17,6 +18,13 @@ const fixture = vi.hoisted(() => {
     board,
     boards: [board],
     files: { sketch: [{ name: 'sketch.ino', content: 'void setup() {}\nvoid loop() {}' }] },
+    components: [] as Array<{
+      id: string;
+      metadataId: string;
+      x: number;
+      y: number;
+      properties: Record<string, unknown>;
+    }>,
     engineRunning: false,
     projectId: 'saved-project',
   };
@@ -33,11 +41,14 @@ vi.mock('../store/useSimulatorStore', () => ({
     getState: () => ({
       boards: fixture.boards,
       activeBoardId: 'uno',
-      components: [],
+      components: fixture.components,
       wires: [],
       serialOutput: '42\n',
       stopBoard,
       updateBoard: (_id: string, value: object) => Object.assign(fixture.board, value),
+      applyCircuitState: (parts: typeof fixture.components) => {
+        fixture.components = parts;
+      },
       setComponents: vi.fn(),
       setWires: vi.fn(),
     }),
@@ -68,7 +79,7 @@ vi.mock('../utils/vlxFile', () => ({
       libraries: board.libraries,
     })),
     fileGroups: fixture.files,
-    components: [],
+    components: fixture.components,
     wires: [],
     activeBoardId: 'uno',
   }),
@@ -90,6 +101,7 @@ beforeEach(() => {
     callback();
     return 1;
   });
+  fixture.components = [];
   fixture.board.running = false;
   fixture.board.compiledProgram = null;
   fixture.board.libraries = undefined;
@@ -220,6 +232,38 @@ describe('project-scoped agent bridge', () => {
     });
     expect(cleared.ok, JSON.stringify(cleared)).toBe(true);
     expect(fixture.board.libraries).toEqual([]);
+  });
+
+  it('restores board metadata as well as the circuit after a rejected mounted edit', async () => {
+    const base = structuredClone(snapshotForAgent());
+    fixture.board.compiledProgram = 'previous-firmware';
+    const document = structuredClone(base);
+    document.boards[0].libraries = ['Servo'];
+    document.components.push({
+      id: 'added',
+      metadataId: 'led',
+      x: 50,
+      y: 50,
+      properties: { color: 'blue' },
+    });
+    const settle = vi
+      .spyOn(circuit, 'settleAgentCircuit')
+      .mockRejectedValueOnce(new Error('Mount rejected'));
+    try {
+      const result = await handleAgentBrowserCommand({
+        command_id: 'rollback-metadata',
+        action: 'apply',
+        document,
+        base_document: base,
+        expected_revision: await projectRevision(base),
+      });
+      expect(result.ok).toBe(false);
+      expect(fixture.board.libraries).toBeUndefined();
+      expect(fixture.board.compiledProgram).toBe('previous-firmware');
+      expect(fixture.components).toEqual([]);
+    } finally {
+      settle.mockRestore();
+    }
   });
 
   it('reports the real revision after the compiler completes the library manifest', async () => {
