@@ -51,8 +51,13 @@ def recipe_metadata(reference_id):
 
 def uses_component(reference_id, component):
     if reference_id in PERIPHERAL_SCHEMAS:
-        actual = {'pushbutton','led','resistor'} if reference_id=='example:button-led' else {'hc-sr04' if 'hcsr04' in reference_id else 'dht22','lcd1602-i2c','ssd1306-i2c-4pin','led','resistor','buzzer'}
-        return component in actual
+        # Optional readouts/alarms are recipe parameters, not base components
+        # of the catalog example. Attributing their libraries to the sensor
+        # would make every LCD/buzzer card claim the DHT dependency.
+        if reference_id == 'example:button-led':
+            return component in {'pushbutton', 'led', 'resistor'}
+        base = 'hc-sr04' if 'hcsr04' in reference_id else 'dht22'
+        return component in {base, 'led', 'resistor'}
     if reference_id==SERVO and component in ('potentiometer','slide-potentiometer'):
         return True
     return component in ({BLINK: ('led', 'resistor'), SERVO: ('servo',), EPAPER: ('epaper-1in54-bw',)}.get(reference_id, ()))

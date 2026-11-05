@@ -541,16 +541,22 @@ class AgentRuntime:
                             result["live_pin_error"] = live.get("error")
                 if name == "get_reference" and result.get("ok") and args.get("section", "overview") == "overview":
                     kind, key = result["id"].split(":", 1)
+                    active = next((board for board in session.workspace.document["boards"]
+                                   if board["id"] == session.workspace.document["activeBoardId"]), None)
                     if kind == "component":
                         data = result["data"]
                         defaults = data.get("defaults", {attr["name"]: attr["defaultValue"] for attr in data.get("attrs", []) if "defaultValue" in attr})
+                        from .component_properties import native_attrs
+                        data["attrs"] = native_attrs(data.get("attrs", []), defaults, data.get("summary", ""))
                         data["metadataId"] = key
                         data["instance_template"] = {"id": key + "-1", "metadataId": key, "x": 300, "y": 100, "properties": defaults}
+                        from .component_usage import usage as component_usage
+                        data["usage"] = component_usage(self.get_catalog(), key, active["boardKind"] if active else None)
                     elif kind == "board":
                         result["data"]["boardKind"] = key
+                        from .board_capabilities import capabilities
+                        result["data"]["capabilities"] = capabilities(key)
                     if kind in ("component", "board"):
-                        active = next((board for board in session.workspace.document["boards"]
-                                       if board["id"] == session.workspace.document["activeBoardId"]), None)
                         examples = self.get_catalog().related_examples(result["id"], active["boardKind"] if active else None)
                         result["data"]["examples"] = examples
                         result["data"]["example_references"] = [item["id"] for item in examples]

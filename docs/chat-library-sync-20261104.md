@@ -112,3 +112,27 @@ bounded, verified public header names and direct the model to edit the include,
 instead of switching drivers or reading private server directories. No include
 is automatically rewritten. Tool/system descriptions explain automatic import
 resolution and distinguish optional library candidates from requirements.
+
+## Follow-up — component API cards, 2026-11-05
+
+The model-side component/board references now carry bounded facts extracted from
+the reviewed recipes and native examples: includes, declarations, calls, related
+libraries and board pin capabilities. This is not upstream API scraping. The
+same real-editor harness, one natural French prompt per fresh context, Qwen
+`qwen3.8-27b`, 20 steps/300 seconds. No solution code was supplied.
+
+| Case | Task | MCP calls | Failed steps | Seconds | Independent compile |
+| --- | --- | ---: | ---: | ---: | --- |
+| A1 | Uno + LCD 16x2 I2C, static text + counter | 4 | 0 | 68.74 | OK |
+| A2 | Uno + servo at 120° | 5 | 0 | 59.27 | OK |
+| A3 | Uno + DHT22 serial readings every 2 s | 4 | 0 | 56.17 | OK |
+| A4 | Uno + SSD1306 OLED, text + counter | 4 | 0 | 52.78 | OK |
+| B1 | Nano + potentiometer on A0, PWM LED | 5 | 0 | 70.91 | OK |
+
+A1 used `LiquidCrystal_I2C lcd(0x27, 16, 2)` with `init/backlight/setCursor/
+print`; A4 used `Adafruit_SSD1306` with address `0x3C`; A3 used `DHT dht(2,
+DHT22)` and the unified sensor dependency; B1 chose Nano PWM pin 9 and A0. All
+five sketches compiled independently with arduino-cli 0 exit status. A3's first
+attempt ended in an agent-connection timeout with zero steps and no tool call;
+the retry above completed normally, so it is not counted as a code failure.
+Behavioral simulation was deliberately not requested.

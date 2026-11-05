@@ -136,6 +136,27 @@ class SimpleChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(result['items'][0]['id'],following['items'][0]['id'])
         self.assertNotIn('example:',json.dumps(result['items']))
 
+    async def test_search_returns_component_api_bounds_and_board_capabilities(self):
+        servo=(await self.call('search_component',query='servo',limit=1))['items'][0]
+        self.assertEqual(servo['usage']['includes'],['Servo.h'])
+        self.assertEqual(servo['usage']['libraries'],['Servo'])
+        self.assertIn('myServo.write(angle);',servo['usage']['calls'])
+        self.assertEqual([x['name'] for x in servo['library_candidates']],['Servo'])
+        angle=next(item for item in servo['attrs'] if item['name']=='angle')
+        self.assertEqual((angle['type'],angle['min'],angle['max']),('number',0,180))
+
+        lcd=(await self.call('search_component',query='LCD 16x2',limit=1))['items'][0]
+        self.assertIn('LiquidCrystal_I2C.h',lcd['usage']['includes'])
+        self.assertIn('screen.init',lcd['usage']['calls'][0])
+        self.assertIn('LiquidCrystal I2C',[x['name'] for x in lcd['library_candidates']])
+        self.assertNotIn('DHT sensor library',[x['name'] for x in lcd['library_candidates']])
+
+        board=(await self.call('search_component',query='uno',kind='board',limit=1))['items'][0]
+        self.assertEqual(board['id'],'board:arduino-uno')
+        self.assertIn(9,board['capabilities']['pwm'])
+        self.assertEqual(board['capabilities']['i2c'],{'sda':['A4','A4.2'],'scl':['A5','A5.2']})
+        self.assertNotIn('library_candidates',board)
+
     async def test_run_captures_source_checks_and_uses_exactly_one_editor_build_run(self):
         await self.board()
         source='void setup() { Serial.begin(9600); }\nvoid loop() { Serial.println("ready"); delay(100); }\n'
@@ -148,6 +169,39 @@ class SimpleChatTests(unittest.IsolatedAsyncioTestCase):
         again=await self.call('run')
         self.assertTrue(again['ok']);self.assertEqual([a for a,_ in self.commands].count('run'),1)
         self.assertEqual(self.commands[-1][0],'observe')
+
+    async def test_editor_property_numbers_and_numeric_text_both_match_native_defaults(self):
+        await self.board(add=[{'component':'servo','id':'s'},{'component':'led','id':'led'}])
+        self.session.editor_capabilities={'compile':True}
+        for angle in (45,'45'):
+            updated=await self.call('components',update=[{'id':'s','properties':{'angle':angle}},
+                {'id':'led','properties':{'brightness':0.5,'flip':True}}])
+            self.assertTrue(updated['ok'],updated)
+            checked=await self.runtime._call_tool(self.session,'check_project',{})
+            self.assertNotEqual(checked['structure_status'],'invalid',checked)
+            self.assertEqual(self.session.workspace.document['components'][0]['properties']['angle'],angle)
+        # The chat reference reports native scalar types, while the shared
+        # compact catalog remains unmodified for independent MCP consumers.
+        reference=await self.runtime._call_tool(self.session,'get_reference',{'id':'component:servo'})
+        self.assertEqual(next(a for a in reference['data']['attrs'] if a['name']=='angle')['type'],'number')
+        self.assertEqual(self.runtime.get_catalog()._entries['component:servo']['attrs'][0]['type'],'string')
+
+    async def test_editor_native_scalar_validation_still_rejects_invalid_values(self):
+        await self.board(add=[{'component':'servo','id':'s'}])
+        self.session.editor_capabilities={'compile':True}
+        for angle in ('not-a-number',True):
+            await self.call('components',update=[{'id':'s','properties':{'angle':angle}}])
+            checked=await self.runtime._call_tool(self.session,'check_project',{})
+            self.assertEqual(checked['structure_status'],'invalid',checked)
+            self.assertTrue(any(i['code']=='attribute_type' for i in checked['issues']))
+
+    async def test_editor_native_range_rejects_out_of_bounds_servo_angle(self):
+        await self.board(add=[{'component':'servo','id':'s'}])
+        self.session.editor_capabilities={'compile':True}
+        await self.call('components',update=[{'id':'s','properties':{'angle':200}}])
+        checked=await self.runtime._call_tool(self.session,'check_project',{})
+        self.assertEqual(checked['structure_status'],'invalid',checked)
+        self.assertTrue(any(issue['code']=='attribute_range' for issue in checked['issues']),checked)
 
     async def test_native_compile_resolves_real_imports_and_never_uses_offline_inventory(self):
         await self.board()

@@ -11,6 +11,7 @@ from app.mcp.compact import ProjectStore, ProjectChecker, BuildService
 from app.mcp.compact.arguments import normalize
 from app.mcp.compact.facade import CompactRuntime
 from .settings import AgentError
+from .component_properties import EditorProjectChecker
 from .workspace import checked_document, project_revision
 
 
@@ -22,7 +23,7 @@ class ChatProjectService:
         libraries, tools = CompactRuntime(None).inventories()
         self.checker = ProjectChecker(self.store, runtime.get_catalog(), inventory=libraries,
                                       source_root=Path(__file__).resolve().parents[3])
-        self.editor_checker = ProjectChecker(self.store, runtime.get_catalog(), inventory=None,
+        self.editor_checker = EditorProjectChecker(self.store, runtime.get_catalog(), inventory=None,
                                       source_root=Path(__file__).resolve().parents[3])
         self.builds = BuildService(self.store, self.checker, toolchains=tools)
         self.current = None

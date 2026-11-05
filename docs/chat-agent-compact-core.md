@@ -51,7 +51,15 @@ the model-facing 24 KiB tool-response budget is unchanged.
 Complete JSON strings used for arrays/objects and numeric/boolean strings are
 normalized losslessly; incomplete JSON is rejected, not guessed. Errors retain
 code/path/received/expected/next_action and refer to the four visible operations.
-Search is paginated and component/board-only. Library API extraction is deferred.
+Search is paginated and component/board-only. Component references carry a bounded
+`usage` card (verified includes, declarations and calls) derived from reviewed
+recipes or native examples, with a note to adapt pins and addresses. Board
+references carry `capabilities` for PWM, analog input, I2C, SPI and UART pins.
+Library names in the card come from the same verified examples, so they remain
+candidates, not requirements; no upstream library source is parsed and the
+24 KiB model-facing response budget still applies. Editor validation also
+infers numeric attribute bounds from the component summary/description, so an
+out-of-range value is rejected before it reaches the project.
 
 ## Run truth
 

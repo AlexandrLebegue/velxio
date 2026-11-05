@@ -42,6 +42,17 @@ class CompactCatalogTests(unittest.TestCase):
         self.assertIn("example:robot-desktop-eyes", self.catalog._entries)
         self.assertEqual(len([e for e in self.catalog._entries.values() if e.get("panel")]), 8)
 
+    def test_optional_peripherals_do_not_replace_passive_base_components(self):
+        led = {item["id"] for item in self.catalog.related_examples("component:led", "arduino-uno")}
+        self.assertIn("example:uno-hcsr04", led)
+        self.assertIn("example:uno-dht22", led)
+        lcd = {item["id"] for item in self.catalog.related_examples("component:lcd1602-i2c", "arduino-uno")}
+        self.assertNotIn("example:uno-hcsr04", lcd)
+        self.assertNotIn("example:uno-dht22", lcd)
+        buzzer = {item["id"] for item in self.catalog.related_examples("component:buzzer", "arduino-uno")}
+        self.assertNotIn("example:uno-hcsr04", buzzer)
+        self.assertNotIn("example:uno-dht22", buzzer)
+
     def test_default_five_and_pagination_no_loss_or_duplicates(self):
         page = self.catalog.search_catalog()
         self.assertEqual(len(page["items"]), 5)

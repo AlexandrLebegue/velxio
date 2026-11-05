@@ -70,8 +70,15 @@ def normalize_chat(name, arguments):
 
 def reference_card(result):
     data=result['data']
-    return {'id':result['id'], **{k:data[k] for k in ('name','metadataId','boardKind','pins','attrs','defaults','protocol','languages') if k in data},
-            'library_candidates':[{'name':v['name']} for v in data.get('libraries',[])][:8] if isinstance(data.get('libraries'),list) else 'unknown'}
+    card={'id':result['id'], **{k:data[k] for k in ('name','summary','metadataId','boardKind','pins','attrs','defaults','protocol','languages','capabilities') if k in data}}
+    usage=data.get('usage')
+    if isinstance(usage,dict):
+        card['usage']=usage
+        libraries=usage.get('libraries')
+        card['library_candidates']=[{'name':name} for name in libraries[:8]] if isinstance(libraries,list) else 'unknown'
+    elif 'metadataId' in data:
+        card['library_candidates']=[{'name':v['name']} for v in data.get('libraries',[])][:8] if isinstance(data.get('libraries'),list) else 'unknown'
+    return card
 
 
 class SimpleChatTools:
